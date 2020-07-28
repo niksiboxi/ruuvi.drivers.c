@@ -1,0 +1,180 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ruuvi_interface_i2c_shtcx.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/*</a>
+<a name="ln2"> * Copyright (c) 2018, Sensirion AG</a>
+<a name="ln3"> * All rights reserved.</a>
+<a name="ln4"> *</a>
+<a name="ln5"> * Redistribution and use in source and binary forms, with or without</a>
+<a name="ln6"> * modification, are permitted provided that the following conditions are met:</a>
+<a name="ln7"> *</a>
+<a name="ln8"> * * Redistributions of source code must retain the above copyright notice, this</a>
+<a name="ln9"> *   list of conditions and the following disclaimer.</a>
+<a name="ln10"> *</a>
+<a name="ln11"> * * Redistributions in binary form must reproduce the above copyright notice,</a>
+<a name="ln12"> *   this list of conditions and the following disclaimer in the documentation</a>
+<a name="ln13"> *   and/or other materials provided with the distribution.</a>
+<a name="ln14"> *</a>
+<a name="ln15"> * * Neither the name of Sensirion AG nor the names of its</a>
+<a name="ln16"> *   contributors may be used to endorse or promote products derived from</a>
+<a name="ln17"> *   this software without specific prior written permission.</a>
+<a name="ln18"> *</a>
+<a name="ln19"> * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot;</a>
+<a name="ln20"> * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE</a>
+<a name="ln21"> * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE</a>
+<a name="ln22"> * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE</a>
+<a name="ln23"> * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR</a>
+<a name="ln24"> * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF</a>
+<a name="ln25"> * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS</a>
+<a name="ln26"> * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN</a>
+<a name="ln27"> * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)</a>
+<a name="ln28"> * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE</a>
+<a name="ln29"> * POSSIBILITY OF SUCH DAMAGE.</a>
+<a name="ln30"> */</a>
+<a name="ln31"> </a>
+<a name="ln32">#include &quot;ruuvi_driver_enabled_modules.h&quot;</a>
+<a name="ln33">#if RI_SHTCX_ENABLED || DOXYGEN</a>
+<a name="ln34">#include &quot;ruuvi_driver_error.h&quot;</a>
+<a name="ln35">#include &quot;ruuvi_interface_i2c.h&quot;</a>
+<a name="ln36">#include &quot;ruuvi_interface_yield.h&quot;</a>
+<a name="ln37">#include &quot;sensirion_arch_config.h&quot;</a>
+<a name="ln38">#include &quot;sensirion_common.h&quot;</a>
+<a name="ln39">#include &quot;sensirion_i2c.h&quot;</a>
+<a name="ln40">#include &quot;shtc1.h&quot;</a>
+<a name="ln41">#include &lt;string.h&gt;</a>
+<a name="ln42"> </a>
+<a name="ln43"> </a>
+<a name="ln44">/*</a>
+<a name="ln45"> * INSTRUCTIONS</a>
+<a name="ln46"> * ============</a>
+<a name="ln47"> *</a>
+<a name="ln48"> * Implement all functions where they are marked as IMPLEMENT.</a>
+<a name="ln49"> * Follow the function specification in the comments.</a>
+<a name="ln50"> */</a>
+<a name="ln51"> </a>
+<a name="ln52">/**</a>
+<a name="ln53"> * Select the current i2c bus by index.</a>
+<a name="ln54"> * All following i2c operations will be directed at that bus.</a>
+<a name="ln55"> *</a>
+<a name="ln56"> * THE IMPLEMENTATION IS OPTIONAL ON SINGLE-BUS SETUPS (all sensors on the same</a>
+<a name="ln57"> * bus)</a>
+<a name="ln58"> *</a>
+<a name="ln59"> * @param bus_idx   Bus index to select</a>
+<a name="ln60"> * @returns         0 on success, an error code otherwise</a>
+<a name="ln61"> */</a>
+<a name="ln62">int16_t sensirion_i2c_select_bus (uint8_t bus_idx)</a>
+<a name="ln63">{</a>
+<a name="ln64">    // IMPLEMENT or leave empty if all sensors are located on one single bus</a>
+<a name="ln65">    RD_ERROR_CHECK (RD_ERROR_NOT_SUPPORTED, ~RD_ERROR_FATAL);</a>
+<a name="ln66">    return 0;</a>
+<a name="ln67">}</a>
+<a name="ln68"> </a>
+<a name="ln69">/**</a>
+<a name="ln70"> * Driver file does not know about the board configuration, use ri_i2c_init instead.</a>
+<a name="ln71"> */</a>
+<a name="ln72">void sensirion_i2c_init (void)</a>
+<a name="ln73">{</a>
+<a name="ln74">    RD_ERROR_CHECK (RD_ERROR_NOT_SUPPORTED, ~RD_ERROR_FATAL);</a>
+<a name="ln75">}</a>
+<a name="ln76"> </a>
+<a name="ln77">/**</a>
+<a name="ln78"> * Release all resources initialized by sensirion_i2c_init().</a>
+<a name="ln79"> */</a>
+<a name="ln80">void sensirion_i2c_release (void)</a>
+<a name="ln81">{</a>
+<a name="ln82">    // IMPLEMENT or leave empty if no resources need to be freed</a>
+<a name="ln83">    RD_ERROR_CHECK (RD_ERROR_NOT_SUPPORTED, ~RD_ERROR_FATAL);</a>
+<a name="ln84">}</a>
+<a name="ln85"> </a>
+<a name="ln86">/**</a>
+<a name="ln87"> * Execute one read transaction on the I2C bus, reading a given number of bytes.</a>
+<a name="ln88"> * If the device does not acknowledge the read command, an error shall be</a>
+<a name="ln89"> * returned.</a>
+<a name="ln90"> *</a>
+<a name="ln91"> * @param address 7-bit I2C address to read from</a>
+<a name="ln92"> * @param data    pointer to the buffer where the data is to be stored</a>
+<a name="ln93"> * @param count   number of bytes to read from I2C and store in the buffer</a>
+<a name="ln94"> * @returns 0 on success, error code otherwise</a>
+<a name="ln95"> */</a>
+<a name="ln96">int8_t sensirion_i2c_read (uint8_t address, uint8_t * data, uint16_t count)</a>
+<a name="ln97">{</a>
+<a name="ln98">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln99">    err_code |= ri_i2c_read_blocking (address, data, count);</a>
+<a name="ln100">    return (RD_SUCCESS == err_code) ? 0 : -STATUS_ERR_BAD_DATA;</a>
+<a name="ln101">}</a>
+<a name="ln102"> </a>
+<a name="ln103">/**</a>
+<a name="ln104"> * Execute one write transaction on the I2C bus, sending a given number of</a>
+<a name="ln105"> * bytes. The bytes in the supplied buffer must be sent to the given address. If</a>
+<a name="ln106"> * the slave device does not acknowledge any of the bytes, an error shall be</a>
+<a name="ln107"> * returned.</a>
+<a name="ln108"> *</a>
+<a name="ln109"> * @param address 7-bit I2C address to write to</a>
+<a name="ln110"> * @param data    pointer to the buffer containing the data to write</a>
+<a name="ln111"> * @param count   number of bytes to read from the buffer and send over I2C</a>
+<a name="ln112"> * @returns 0 on success, error code otherwise</a>
+<a name="ln113"> */</a>
+<a name="ln114">int8_t sensirion_i2c_write (uint8_t address, const uint8_t * data,</a>
+<a name="ln115">                            uint16_t count)</a>
+<a name="ln116">{</a>
+<a name="ln117">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln118"> </a>
+<a name="ln119">    // data is const, NRF function is not. Make local copy</a>
+<a name="ln120">    if (count &gt; SENSIRION_COMMAND_SIZE || count &lt; SENSIRION_COMMAND_SIZE)</a>
+<a name="ln121">    {</a>
+<a name="ln122">        RD_ERROR_CHECK (RD_ERROR_INVALID_LENGTH, RD_SUCCESS);</a>
+<a name="ln123">    }</a>
+<a name="ln124"> </a>
+<a name="ln125">    uint8_t deepcpy[SENSIRION_COMMAND_SIZE];</a>
+<a name="ln126">    memcpy (deepcpy, data, SENSIRION_COMMAND_SIZE);</a>
+<a name="ln127">    err_code |= ri_i2c_write_blocking (address, deepcpy, count, true);</a>
+<a name="ln128">    return (RD_SUCCESS == err_code) ? 0 : STATUS_ERR_BAD_DATA;</a>
+<a name="ln129">}</a>
+<a name="ln130"> </a>
+<a name="ln131">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="99"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'count' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="120"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="120"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '<' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="127"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'count' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

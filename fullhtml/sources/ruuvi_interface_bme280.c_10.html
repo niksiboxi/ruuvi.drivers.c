@@ -1,0 +1,787 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ruuvi_interface_bme280.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;ruuvi_driver_enabled_modules.h&quot;</a>
+<a name="ln2">#if RI_BME280_ENABLED || DOXYGEN</a>
+<a name="ln3">// Ruuvi headers</a>
+<a name="ln4">#include &quot;ruuvi_driver_error.h&quot;</a>
+<a name="ln5">#include &quot;ruuvi_driver_sensor.h&quot;</a>
+<a name="ln6">#include &quot;ruuvi_interface_bme280.h&quot;</a>
+<a name="ln7">#include &quot;ruuvi_interface_environmental.h&quot;</a>
+<a name="ln8">#include &quot;ruuvi_interface_gpio.h&quot;</a>
+<a name="ln9">#include &quot;ruuvi_interface_spi.h&quot;</a>
+<a name="ln10">#include &quot;ruuvi_interface_spi_bme280.h&quot;</a>
+<a name="ln11">#include &quot;ruuvi_interface_i2c.h&quot;</a>
+<a name="ln12">#include &quot;ruuvi_interface_i2c_bme280.h&quot;</a>
+<a name="ln13">#include &quot;ruuvi_interface_yield.h&quot;</a>
+<a name="ln14"> </a>
+<a name="ln15">#include &lt;string.h&gt;</a>
+<a name="ln16"> </a>
+<a name="ln17">// Bosch driver.</a>
+<a name="ln18">#include &quot;bme280.h&quot;</a>
+<a name="ln19">#include &quot;bme280_defs.h&quot;</a>
+<a name="ln20">#include &quot;bme280_selftest.h&quot;</a>
+<a name="ln21">#if !(BME280_FLOAT_ENABLE || DOXYGEN)</a>
+<a name="ln22">#error &quot;Please #define BME280_FLOAT_ENABLE in makefile CFLAGS&quot;</a>
+<a name="ln23">#endif</a>
+<a name="ln24"> </a>
+<a name="ln25">/**</a>
+<a name="ln26"> * @addtogroup BME280</a>
+<a name="ln27"> */</a>
+<a name="ln28">/*@{*/</a>
+<a name="ln29">/**</a>
+<a name="ln30"> * @file ruuvi_interface_bme280.c</a>
+<a name="ln31"> * @author Otso Jousimaa &lt;otso@ojousima.net&gt;</a>
+<a name="ln32"> * @date 2020-04-28</a>
+<a name="ln33"> * @copyright Ruuvi Innovations Ltd, license BSD-3-Clause.</a>
+<a name="ln34"> *</a>
+<a name="ln35"> * Requires Bosch BME280_driver, available under BSD-3 on GitHub.</a>
+<a name="ln36"> * Will only get compiled if RI_BME280_ENABLED is defined as true</a>
+<a name="ln37"> * Requires BME280_FLOAT_ENABLE defined in makefile or otherwise passed to preprocessor</a>
+<a name="ln38"> *</a>
+<a name="ln39"> */</a>
+<a name="ln40"> </a>
+<a name="ln41">/** @brief Macro for checking &quot;ignored&quot; parameters NO_CHANGE, MIN, MAX, DEFAULT */</a>
+<a name="ln42">#define RETURN_SUCCESS_ON_VALID(param) do {\</a>
+<a name="ln43">            if(RD_SENSOR_CFG_DEFAULT   == param ||\</a>
+<a name="ln44">               RD_SENSOR_CFG_MIN       == param ||\</a>
+<a name="ln45">               RD_SENSOR_CFG_MAX       == param ||\</a>
+<a name="ln46">               RD_SENSOR_CFG_NO_CHANGE == param   \</a>
+<a name="ln47">             ) return RD_SUCCESS;\</a>
+<a name="ln48">           } while(0)</a>
+<a name="ln49"> </a>
+<a name="ln50">/** @brief Macro for checking that sensor is in sleep mode before configuration */</a>
+<a name="ln51">#define VERIFY_SENSOR_SLEEPS() do { \</a>
+<a name="ln52">          uint8_t MACRO_MODE = 0; \</a>
+<a name="ln53">          ri_bme280_mode_get(&amp;MACRO_MODE); \</a>
+<a name="ln54">          if(RD_SENSOR_CFG_SLEEP != MACRO_MODE) { return RD_ERROR_INVALID_STATE; } \</a>
+<a name="ln55">          } while(0)</a>
+<a name="ln56"> </a>
+<a name="ln57"> </a>
+<a name="ln58">/** State variables **/</a>
+<a name="ln59">static struct bme280_dev dev = {0};</a>
+<a name="ln60">static uint64_t tsample;</a>
+<a name="ln61">static const char m_sensor_name[] = &quot;BME280&quot;;</a>
+<a name="ln62"> </a>
+<a name="ln63">/**</a>
+<a name="ln64"> * Convert error from BME280 driver to appropriate NRF ERROR</a>
+<a name="ln65"> */</a>
+<a name="ln66">static rd_status_t BME_TO_RUUVI_ERROR (int8_t rslt)</a>
+<a name="ln67">{</a>
+<a name="ln68">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln69"> </a>
+<a name="ln70">    if (BME280_E_DEV_NOT_FOUND == rslt)  { err_code = RD_ERROR_NOT_FOUND; }</a>
+<a name="ln71">    else if (BME280_E_NULL_PTR == rslt)  { err_code = RD_ERROR_NULL; }</a>
+<a name="ln72">    else if (BME280_E_COMM_FAIL == rslt) { err_code = RD_ERROR_BUSY; }</a>
+<a name="ln73">    else if (BME280_OK == rslt) { return RD_SUCCESS; }</a>
+<a name="ln74"> </a>
+<a name="ln75">    return err_code;</a>
+<a name="ln76">}</a>
+<a name="ln77"> </a>
+<a name="ln78">void bosch_delay_ms (uint32_t time_ms)</a>
+<a name="ln79">{</a>
+<a name="ln80">    ri_delay_ms (time_ms);</a>
+<a name="ln81">}</a>
+<a name="ln82"> </a>
+<a name="ln83">// BME280 datasheet Appendix B.</a>
+<a name="ln84">static uint32_t bme280_max_meas_time (uint8_t oversampling)</a>
+<a name="ln85">{</a>
+<a name="ln86">    // Time</a>
+<a name="ln87">    float time = 1.25F + \</a>
+<a name="ln88">                 2.3F * 3.0F * oversampling + \</a>
+<a name="ln89">                 2.0F * 0.575F;</a>
+<a name="ln90">    // Roundoff + margin</a>
+<a name="ln91">    return (uint32_t) (2U + (uint32_t) time);</a>
+<a name="ln92">}</a>
+<a name="ln93"> </a>
+<a name="ln94">/** Initialize BME280 into low-power mode **/</a>
+<a name="ln95">rd_status_t ri_bme280_init (rd_sensor_t *</a>
+<a name="ln96">                            environmental_sensor, rd_bus_t bus, uint8_t handle)</a>
+<a name="ln97">{</a>
+<a name="ln98">    if (NULL == environmental_sensor) { return RD_ERROR_NULL; }</a>
+<a name="ln99"> </a>
+<a name="ln100">    // dev is NULL at boot, if function pointers have been set sensor is initialized</a>
+<a name="ln101">    if (NULL != dev.write) { return RD_ERROR_INVALID_STATE; }</a>
+<a name="ln102"> </a>
+<a name="ln103">    rd_sensor_initialize (environmental_sensor);</a>
+<a name="ln104">    environmental_sensor-&gt;name = m_sensor_name;</a>
+<a name="ln105">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln106"> </a>
+<a name="ln107">    switch (bus)</a>
+<a name="ln108">    {</a>
+<a name="ln109">#if RI_BME280_SPI_ENABLED</a>
+<a name="ln110"> </a>
+<a name="ln111">        case RD_BUS_SPI:</a>
+<a name="ln112">            dev.dev_id = handle;</a>
+<a name="ln113">            dev.intf = BME280_SPI_INTF;</a>
+<a name="ln114">            dev.read = &amp;ri_spi_bme280_read;</a>
+<a name="ln115">            dev.write = &amp;ri_spi_bme280_write;</a>
+<a name="ln116">            dev.delay_ms = bosch_delay_ms;</a>
+<a name="ln117">            err_code |= BME_TO_RUUVI_ERROR (bme280_init (&amp;dev));</a>
+<a name="ln118"> </a>
+<a name="ln119">            if (err_code != RD_SUCCESS) { return err_code; }</a>
+<a name="ln120"> </a>
+<a name="ln121">            break;</a>
+<a name="ln122">#endif</a>
+<a name="ln123">#if RI_BME280_I2C_ENABLED</a>
+<a name="ln124"> </a>
+<a name="ln125">        case RD_BUS_I2C:</a>
+<a name="ln126">            dev.dev_id = handle;</a>
+<a name="ln127">            dev.intf = BME280_I2C_INTF;</a>
+<a name="ln128">            dev.read = &amp;ri_i2c_bme280_read;</a>
+<a name="ln129">            dev.write = &amp;ri_i2c_bme280_write;</a>
+<a name="ln130">            dev.delay_ms = bosch_delay_ms;</a>
+<a name="ln131">            err_code |= BME_TO_RUUVI_ERROR (bme280_init (&amp;dev));</a>
+<a name="ln132"> </a>
+<a name="ln133">            if (err_code != RD_SUCCESS) { return err_code; }</a>
+<a name="ln134"> </a>
+<a name="ln135">            break;</a>
+<a name="ln136">#endif</a>
+<a name="ln137"> </a>
+<a name="ln138">        case RD_BUS_NONE:</a>
+<a name="ln139">        default:</a>
+<a name="ln140">            return  RD_ERROR_INVALID_PARAM;</a>
+<a name="ln141">    }</a>
+<a name="ln142"> </a>
+<a name="ln143">    err_code |= BME_TO_RUUVI_ERROR (bme280_crc_selftest (&amp;dev));</a>
+<a name="ln144">    err_code |= BME_TO_RUUVI_ERROR (bme280_soft_reset (&amp;dev));</a>
+<a name="ln145">    // Setup Oversampling 1 to enable sensor</a>
+<a name="ln146">    uint8_t dsp = RD_SENSOR_DSP_OS;</a>
+<a name="ln147">    uint8_t dsp_parameter = 1;</a>
+<a name="ln148">    err_code |= ri_bme280_dsp_set (&amp;dsp, &amp;dsp_parameter);</a>
+<a name="ln149"> </a>
+<a name="ln150">    if (RD_SUCCESS == err_code)</a>
+<a name="ln151">    {</a>
+<a name="ln152">        environmental_sensor-&gt;init              = ri_bme280_init;</a>
+<a name="ln153">        environmental_sensor-&gt;uninit            = ri_bme280_uninit;</a>
+<a name="ln154">        environmental_sensor-&gt;samplerate_set    = ri_bme280_samplerate_set;</a>
+<a name="ln155">        environmental_sensor-&gt;samplerate_get    = ri_bme280_samplerate_get;</a>
+<a name="ln156">        environmental_sensor-&gt;resolution_set    = ri_bme280_resolution_set;</a>
+<a name="ln157">        environmental_sensor-&gt;resolution_get    = ri_bme280_resolution_get;</a>
+<a name="ln158">        environmental_sensor-&gt;scale_set         = ri_bme280_scale_set;</a>
+<a name="ln159">        environmental_sensor-&gt;scale_get         = ri_bme280_scale_get;</a>
+<a name="ln160">        environmental_sensor-&gt;dsp_set           = ri_bme280_dsp_set;</a>
+<a name="ln161">        environmental_sensor-&gt;dsp_get           = ri_bme280_dsp_get;</a>
+<a name="ln162">        environmental_sensor-&gt;mode_set          = ri_bme280_mode_set;</a>
+<a name="ln163">        environmental_sensor-&gt;mode_get          = ri_bme280_mode_get;</a>
+<a name="ln164">        environmental_sensor-&gt;data_get          = ri_bme280_data_get;</a>
+<a name="ln165">        environmental_sensor-&gt;configuration_set = rd_sensor_configuration_set;</a>
+<a name="ln166">        environmental_sensor-&gt;configuration_get = rd_sensor_configuration_get;</a>
+<a name="ln167">        environmental_sensor-&gt;provides.datas.temperature_c = 1;</a>
+<a name="ln168">        environmental_sensor-&gt;provides.datas.humidity_rh = 1;</a>
+<a name="ln169">        environmental_sensor-&gt;provides.datas.pressure_pa = 1;</a>
+<a name="ln170">        tsample = RD_UINT64_INVALID;</a>
+<a name="ln171">    }</a>
+<a name="ln172"> </a>
+<a name="ln173">    return err_code;</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">rd_status_t ri_bme280_uninit (rd_sensor_t * sensor,</a>
+<a name="ln177">                              rd_bus_t bus, uint8_t handle)</a>
+<a name="ln178">{</a>
+<a name="ln179">    if (NULL == sensor) { return RD_ERROR_NULL; }</a>
+<a name="ln180"> </a>
+<a name="ln181">    rd_status_t err_code = BME_TO_RUUVI_ERROR (bme280_soft_reset (&amp;dev));</a>
+<a name="ln182"> </a>
+<a name="ln183">    if (RD_SUCCESS != err_code) { return err_code; }</a>
+<a name="ln184"> </a>
+<a name="ln185">    rd_sensor_uninitialize (sensor);</a>
+<a name="ln186">    memset (&amp;dev, 0, sizeof (dev));</a>
+<a name="ln187">    tsample = RD_UINT64_INVALID;</a>
+<a name="ln188">    return err_code;</a>
+<a name="ln189">}</a>
+<a name="ln190"> </a>
+<a name="ln191">rd_status_t ri_bme280_samplerate_set (uint8_t * samplerate)</a>
+<a name="ln192">{</a>
+<a name="ln193">    if (NULL == samplerate) { return RD_ERROR_NULL; }</a>
+<a name="ln194"> </a>
+<a name="ln195">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln196">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln197"> </a>
+<a name="ln198">    if (RD_SENSOR_CFG_DEFAULT == *samplerate)  { dev.settings.standby_time = BME280_STANDBY_TIME_1000_MS; }</a>
+<a name="ln199">    else if (*samplerate == 1U)                           { dev.settings.standby_time = BME280_STANDBY_TIME_1000_MS; }</a>
+<a name="ln200">    else if (*samplerate == 2U)                           { dev.settings.standby_time = BME280_STANDBY_TIME_500_MS; }</a>
+<a name="ln201">    else if (*samplerate &lt;= 8U)                           { dev.settings.standby_time = BME280_STANDBY_TIME_125_MS; }</a>
+<a name="ln202">    else if (*samplerate &lt;= 16U)                          { dev.settings.standby_time = BME280_STANDBY_TIME_62_5_MS; }</a>
+<a name="ln203">    else if (*samplerate &lt;= 50U)                          { dev.settings.standby_time = BME280_STANDBY_TIME_20_MS; }</a>
+<a name="ln204">    else if (*samplerate &lt;= 100U)                         { dev.settings.standby_time = BME280_STANDBY_TIME_10_MS; }</a>
+<a name="ln205">    else if (*samplerate &lt;= 200U)                         { dev.settings.standby_time = BME280_STANDBY_TIME_0_5_MS; }</a>
+<a name="ln206">    else if (RD_SENSOR_CFG_MIN == *samplerate) { dev.settings.standby_time = BME280_STANDBY_TIME_1000_MS; }</a>
+<a name="ln207">    else if (RD_SENSOR_CFG_MAX == *samplerate) { dev.settings.standby_time = BME280_STANDBY_TIME_0_5_MS; }</a>
+<a name="ln208">    else if (RD_SENSOR_CFG_NO_CHANGE == *samplerate) {} // do nothing</a>
+<a name="ln209">    else { *samplerate = RD_SENSOR_ERR_NOT_SUPPORTED; err_code |= RD_ERROR_NOT_SUPPORTED; }</a>
+<a name="ln210"> </a>
+<a name="ln211">    if (RD_SUCCESS == err_code)</a>
+<a name="ln212">    {</a>
+<a name="ln213">        // BME 280 must be in standby while configured</a>
+<a name="ln214">        err_code |=  BME_TO_RUUVI_ERROR (bme280_set_sensor_settings (BME280_STANDBY_SEL, &amp;dev));</a>
+<a name="ln215">        err_code |= ri_bme280_samplerate_get (samplerate);</a>
+<a name="ln216">    }</a>
+<a name="ln217"> </a>
+<a name="ln218">    return err_code;</a>
+<a name="ln219">}</a>
+<a name="ln220"> </a>
+<a name="ln221">rd_status_t ri_bme280_samplerate_get (uint8_t * samplerate)</a>
+<a name="ln222">{</a>
+<a name="ln223">    if (NULL == samplerate) { return RD_ERROR_NULL; }</a>
+<a name="ln224"> </a>
+<a name="ln225">    rd_status_t err_code = BME_TO_RUUVI_ERROR (bme280_get_sensor_settings (&amp;dev));</a>
+<a name="ln226"> </a>
+<a name="ln227">    if (RD_SUCCESS != err_code) { return err_code; }</a>
+<a name="ln228"> </a>
+<a name="ln229">    if (BME280_STANDBY_TIME_1000_MS == dev.settings.standby_time)      { *samplerate = 1;   }</a>
+<a name="ln230">    else if (BME280_STANDBY_TIME_500_MS == dev.settings.standby_time)  { *samplerate = 2;   }</a>
+<a name="ln231">    else if (BME280_STANDBY_TIME_125_MS == dev.settings.standby_time)  { *samplerate = 8;   }</a>
+<a name="ln232">    else if (BME280_STANDBY_TIME_62_5_MS == dev.settings.standby_time) { *samplerate = 16;  }</a>
+<a name="ln233">    else if (BME280_STANDBY_TIME_20_MS == dev.settings.standby_time)   { *samplerate = 50;  }</a>
+<a name="ln234">    else if (BME280_STANDBY_TIME_10_MS == dev.settings.standby_time)   { *samplerate = 100;  }</a>
+<a name="ln235">    else if (BME280_STANDBY_TIME_0_5_MS == dev.settings.standby_time)    { *samplerate = 200; }</a>
+<a name="ln236"> </a>
+<a name="ln237">    return err_code;</a>
+<a name="ln238">}</a>
+<a name="ln239"> </a>
+<a name="ln240">rd_status_t ri_bme280_resolution_set (uint8_t * resolution)</a>
+<a name="ln241">{</a>
+<a name="ln242">    if (NULL == resolution) { return RD_ERROR_NULL; }</a>
+<a name="ln243"> </a>
+<a name="ln244">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln245">    uint8_t original = *resolution;</a>
+<a name="ln246">    *resolution = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln247">    RETURN_SUCCESS_ON_VALID (original);</a>
+<a name="ln248">    return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln249">}</a>
+<a name="ln250"> </a>
+<a name="ln251">rd_status_t ri_bme280_resolution_get (uint8_t * resolution)</a>
+<a name="ln252">{</a>
+<a name="ln253">    if (NULL == resolution) { return RD_ERROR_NULL; }</a>
+<a name="ln254"> </a>
+<a name="ln255">    *resolution = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln256">    return RD_SUCCESS;</a>
+<a name="ln257">}</a>
+<a name="ln258"> </a>
+<a name="ln259">rd_status_t ri_bme280_scale_set (uint8_t * scale)</a>
+<a name="ln260">{</a>
+<a name="ln261">    if (NULL == scale) { return RD_ERROR_NULL; }</a>
+<a name="ln262"> </a>
+<a name="ln263">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln264">    uint8_t original = *scale;</a>
+<a name="ln265">    *scale = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln266">    RETURN_SUCCESS_ON_VALID (original);</a>
+<a name="ln267">    return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln268">}</a>
+<a name="ln269"> </a>
+<a name="ln270">rd_status_t ri_bme280_scale_get (uint8_t * scale)</a>
+<a name="ln271">{</a>
+<a name="ln272">    if (NULL == scale) { return RD_ERROR_NULL; }</a>
+<a name="ln273"> </a>
+<a name="ln274">    *scale = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln275">    return RD_SUCCESS;</a>
+<a name="ln276">}</a>
+<a name="ln277"> </a>
+<a name="ln278">rd_status_t ri_bme280_dsp_set (uint8_t * dsp, uint8_t * parameter)</a>
+<a name="ln279">{</a>
+<a name="ln280">    if (NULL == dsp || NULL == parameter) { return RD_ERROR_NULL; }</a>
+<a name="ln281"> </a>
+<a name="ln282">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln283"> </a>
+<a name="ln284">    // Validate configuration</a>
+<a name="ln285">    if (1U  != *parameter</a>
+<a name="ln286">            &amp;&amp; 2U  != *parameter</a>
+<a name="ln287">            &amp;&amp; 4U  != *parameter</a>
+<a name="ln288">            &amp;&amp; 8U  != *parameter</a>
+<a name="ln289">            &amp;&amp; 16U != *parameter</a>
+<a name="ln290">            &amp;&amp; RD_SENSOR_CFG_DEFAULT != *parameter</a>
+<a name="ln291">            &amp;&amp; RD_SENSOR_CFG_MIN     != *parameter</a>
+<a name="ln292">            &amp;&amp; RD_SENSOR_CFG_MAX     != *parameter</a>
+<a name="ln293">            &amp;&amp; RD_SENSOR_DSP_LAST != *dsp)</a>
+<a name="ln294">    {</a>
+<a name="ln295">        return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln296">    }</a>
+<a name="ln297"> </a>
+<a name="ln298">    // Error if DSP is not last, and if dsp is something else than IIR or OS</a>
+<a name="ln299">    if ( (RD_SENSOR_DSP_LAST != *dsp) &amp;&amp;</a>
+<a name="ln300">            ~ (RD_SENSOR_DSP_LOW_PASS | RD_SENSOR_DSP_OS) &amp; (*dsp))</a>
+<a name="ln301">    {</a>
+<a name="ln302">        return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln303">    }</a>
+<a name="ln304"> </a>
+<a name="ln305">    // Clear setup</a>
+<a name="ln306">    uint8_t settings_sel = 0U;</a>
+<a name="ln307">    // Always 1x oversampling to keep sensing element enabled</a>
+<a name="ln308">    dev.settings.osr_h = BME280_OVERSAMPLING_1X;</a>
+<a name="ln309">    dev.settings.osr_p = BME280_OVERSAMPLING_1X;</a>
+<a name="ln310">    dev.settings.osr_t = BME280_OVERSAMPLING_1X;</a>
+<a name="ln311">    dev.settings.filter = BME280_FILTER_COEFF_OFF;</a>
+<a name="ln312">    settings_sel |= BME280_OSR_PRESS_SEL;</a>
+<a name="ln313">    settings_sel |= BME280_OSR_TEMP_SEL;</a>
+<a name="ln314">    settings_sel |= BME280_OSR_HUM_SEL;</a>
+<a name="ln315">    settings_sel |= BME280_FILTER_SEL;</a>
+<a name="ln316"> </a>
+<a name="ln317">    // Setup IIR</a>
+<a name="ln318">    if (RD_SENSOR_DSP_LOW_PASS &amp; *dsp)</a>
+<a name="ln319">    {</a>
+<a name="ln320">        if (RD_SENSOR_CFG_DEFAULT == *parameter || \</a>
+<a name="ln321">                RD_SENSOR_CFG_MIN     == *parameter || \</a>
+<a name="ln322">                1U == *parameter</a>
+<a name="ln323">           )</a>
+<a name="ln324">        {</a>
+<a name="ln325">            dev.settings.filter = BME280_FILTER_COEFF_OFF;</a>
+<a name="ln326">            *parameter = 1U;</a>
+<a name="ln327">        }</a>
+<a name="ln328">        else if (2 == *parameter)</a>
+<a name="ln329">        {</a>
+<a name="ln330">            dev.settings.filter = BME280_FILTER_COEFF_2;</a>
+<a name="ln331">            *parameter = 2U;</a>
+<a name="ln332">        }</a>
+<a name="ln333">        else if (4U &gt;= *parameter)</a>
+<a name="ln334">        {</a>
+<a name="ln335">            dev.settings.filter = BME280_FILTER_COEFF_4;</a>
+<a name="ln336">            *parameter = 4U;</a>
+<a name="ln337">        }</a>
+<a name="ln338">        else if (8U &gt;= *parameter)</a>
+<a name="ln339">        {</a>
+<a name="ln340">            dev.settings.filter = BME280_FILTER_COEFF_8;</a>
+<a name="ln341">            *parameter = 8U;</a>
+<a name="ln342">        }</a>
+<a name="ln343">        else if (RD_SENSOR_CFG_MAX == *parameter || \</a>
+<a name="ln344">                 16U &gt;= *parameter)</a>
+<a name="ln345">        {</a>
+<a name="ln346">            dev.settings.filter = BME280_FILTER_COEFF_16;</a>
+<a name="ln347">            *parameter = 16U;</a>
+<a name="ln348">        }</a>
+<a name="ln349">        else</a>
+<a name="ln350">        {</a>
+<a name="ln351">            *parameter = RD_SENSOR_ERR_NOT_SUPPORTED;</a>
+<a name="ln352">            return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln353">        }</a>
+<a name="ln354">    }</a>
+<a name="ln355"> </a>
+<a name="ln356">    // Setup Oversampling</a>
+<a name="ln357">    if (RD_SENSOR_DSP_OS &amp; *dsp)</a>
+<a name="ln358">    {</a>
+<a name="ln359">        if (RD_SENSOR_CFG_DEFAULT == *parameter || \</a>
+<a name="ln360">                RD_SENSOR_CFG_MIN     == *parameter || \</a>
+<a name="ln361">                1U == *parameter)</a>
+<a name="ln362">        {</a>
+<a name="ln363">            dev.settings.osr_h = BME280_OVERSAMPLING_1X;</a>
+<a name="ln364">            dev.settings.osr_p = BME280_OVERSAMPLING_1X;</a>
+<a name="ln365">            dev.settings.osr_t = BME280_OVERSAMPLING_1X;</a>
+<a name="ln366">            *parameter = 1U;</a>
+<a name="ln367">        }</a>
+<a name="ln368">        else if (2 == *parameter)</a>
+<a name="ln369">        {</a>
+<a name="ln370">            dev.settings.osr_h = BME280_OVERSAMPLING_2X;</a>
+<a name="ln371">            dev.settings.osr_p = BME280_OVERSAMPLING_2X;</a>
+<a name="ln372">            dev.settings.osr_t = BME280_OVERSAMPLING_2X;</a>
+<a name="ln373">            *parameter = 2U;</a>
+<a name="ln374">        }</a>
+<a name="ln375">        else if (4U &gt;= *parameter)</a>
+<a name="ln376">        {</a>
+<a name="ln377">            dev.settings.osr_h = BME280_OVERSAMPLING_4X;</a>
+<a name="ln378">            dev.settings.osr_p = BME280_OVERSAMPLING_4X;</a>
+<a name="ln379">            dev.settings.osr_t = BME280_OVERSAMPLING_4X;</a>
+<a name="ln380">            *parameter = 4U;</a>
+<a name="ln381">        }</a>
+<a name="ln382">        else if (8U &gt;= *parameter)</a>
+<a name="ln383">        {</a>
+<a name="ln384">            dev.settings.osr_h = BME280_OVERSAMPLING_8X;</a>
+<a name="ln385">            dev.settings.osr_p = BME280_OVERSAMPLING_8X;</a>
+<a name="ln386">            dev.settings.osr_t = BME280_OVERSAMPLING_8X;</a>
+<a name="ln387">            *parameter = 8U;</a>
+<a name="ln388">        }</a>
+<a name="ln389">        else if (16U &gt;= *parameter || \</a>
+<a name="ln390">                 RD_SENSOR_CFG_MAX)</a>
+<a name="ln391">        {</a>
+<a name="ln392">            dev.settings.osr_h = BME280_OVERSAMPLING_16X;</a>
+<a name="ln393">            dev.settings.osr_p = BME280_OVERSAMPLING_16X;</a>
+<a name="ln394">            dev.settings.osr_t = BME280_OVERSAMPLING_16X;</a>
+<a name="ln395">            *parameter = 16U;</a>
+<a name="ln396">        }</a>
+<a name="ln397">        else</a>
+<a name="ln398">        {</a>
+<a name="ln399">            *parameter = RD_SENSOR_ERR_NOT_SUPPORTED;</a>
+<a name="ln400">            return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln401">        }</a>
+<a name="ln402">    }</a>
+<a name="ln403"> </a>
+<a name="ln404">    //Write configuration</a>
+<a name="ln405">    return BME_TO_RUUVI_ERROR (bme280_set_sensor_settings (settings_sel, &amp;dev));</a>
+<a name="ln406">}</a>
+<a name="ln407"> </a>
+<a name="ln408">// Read configuration</a>
+<a name="ln409">rd_status_t ri_bme280_dsp_get (uint8_t * dsp, uint8_t * parameter)</a>
+<a name="ln410">{</a>
+<a name="ln411">    if (NULL == dsp || NULL == parameter) { return RD_ERROR_NULL; }</a>
+<a name="ln412"> </a>
+<a name="ln413">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln414">    err_code |= BME_TO_RUUVI_ERROR (bme280_get_sensor_settings (&amp;dev));</a>
+<a name="ln415"> </a>
+<a name="ln416">    if (RD_SUCCESS != err_code) { return err_code; }</a>
+<a name="ln417"> </a>
+<a name="ln418">    // Assume default / 0,</a>
+<a name="ln419">    *dsp       = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln420">    *parameter = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln421"> </a>
+<a name="ln422">    // Check if IIR has been set. If yes, read DSP param from there.</a>
+<a name="ln423">    if (BME280_FILTER_COEFF_OFF != dev.settings.filter)</a>
+<a name="ln424">    {</a>
+<a name="ln425">        *dsp |= RD_SENSOR_DSP_LOW_PASS;</a>
+<a name="ln426"> </a>
+<a name="ln427">        switch (dev.settings.filter)</a>
+<a name="ln428">        {</a>
+<a name="ln429">            case BME280_FILTER_COEFF_2:</a>
+<a name="ln430">                *parameter = 2U;</a>
+<a name="ln431">                break;</a>
+<a name="ln432"> </a>
+<a name="ln433">            case BME280_FILTER_COEFF_4:</a>
+<a name="ln434">                *parameter = 4U;</a>
+<a name="ln435">                break;</a>
+<a name="ln436"> </a>
+<a name="ln437">            case BME280_FILTER_COEFF_8:</a>
+<a name="ln438">                *parameter = 8U;</a>
+<a name="ln439">                break;</a>
+<a name="ln440"> </a>
+<a name="ln441">            case BME280_FILTER_COEFF_16:</a>
+<a name="ln442">                *parameter = 16U;</a>
+<a name="ln443">                break;</a>
+<a name="ln444">        }</a>
+<a name="ln445">    }</a>
+<a name="ln446"> </a>
+<a name="ln447">    // Check if OS has been set. If yes, read DSP param from there.</a>
+<a name="ln448">    // Param should be same for OS and IIR if it is &gt;1.</a>
+<a name="ln449">    // OSR is same for every element.</a>
+<a name="ln450">    if (BME280_NO_OVERSAMPLING != dev.settings.osr_h</a>
+<a name="ln451">            &amp;&amp; BME280_OVERSAMPLING_1X != dev.settings.osr_h)</a>
+<a name="ln452">    {</a>
+<a name="ln453">        *dsp |= RD_SENSOR_DSP_OS;</a>
+<a name="ln454"> </a>
+<a name="ln455">        switch (dev.settings.osr_h)</a>
+<a name="ln456">        {</a>
+<a name="ln457">            case BME280_OVERSAMPLING_2X:</a>
+<a name="ln458">                *parameter = 2U;</a>
+<a name="ln459">                break;</a>
+<a name="ln460"> </a>
+<a name="ln461">            case BME280_OVERSAMPLING_4X:</a>
+<a name="ln462">                *parameter = 4U;</a>
+<a name="ln463">                break;</a>
+<a name="ln464"> </a>
+<a name="ln465">            case BME280_OVERSAMPLING_8X:</a>
+<a name="ln466">                *parameter = 8U;</a>
+<a name="ln467">                break;</a>
+<a name="ln468"> </a>
+<a name="ln469">            case BME280_OVERSAMPLING_16X:</a>
+<a name="ln470">                *parameter = 16U;</a>
+<a name="ln471">                break;</a>
+<a name="ln472">        }</a>
+<a name="ln473">    }</a>
+<a name="ln474"> </a>
+<a name="ln475">    return RD_SUCCESS;</a>
+<a name="ln476">}</a>
+<a name="ln477"> </a>
+<a name="ln478">rd_status_t ri_bme280_mode_set (uint8_t * mode)</a>
+<a name="ln479">{</a>
+<a name="ln480">    if (NULL == mode) { return RD_ERROR_NULL; }</a>
+<a name="ln481"> </a>
+<a name="ln482">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln483">    uint8_t current_mode = RD_SENSOR_CFG_SLEEP;</a>
+<a name="ln484"> </a>
+<a name="ln485">    switch (*mode)</a>
+<a name="ln486">    {</a>
+<a name="ln487">        case RD_SENSOR_CFG_SLEEP:</a>
+<a name="ln488">            err_code = BME_TO_RUUVI_ERROR (bme280_set_sensor_mode (BME280_SLEEP_MODE, &amp;dev));</a>
+<a name="ln489">            break;</a>
+<a name="ln490"> </a>
+<a name="ln491">        case RD_SENSOR_CFG_SINGLE:</a>
+<a name="ln492">            // Do nothing if sensor is in continuous mode</a>
+<a name="ln493">            ri_bme280_mode_get (&amp;current_mode);</a>
+<a name="ln494"> </a>
+<a name="ln495">            if (RD_SENSOR_CFG_CONTINUOUS == current_mode)</a>
+<a name="ln496">            {</a>
+<a name="ln497">                *mode = RD_SENSOR_CFG_CONTINUOUS;</a>
+<a name="ln498">                return RD_ERROR_INVALID_STATE;</a>
+<a name="ln499">            }</a>
+<a name="ln500"> </a>
+<a name="ln501">            err_code = BME_TO_RUUVI_ERROR (bme280_set_sensor_mode (BME280_FORCED_MODE, &amp;dev));</a>
+<a name="ln502">            // We assume that dev struct is in sync with the state of the BME280 and underlying interface</a>
+<a name="ln503">            // which has the number of settings as 2^OSR is not changed.</a>
+<a name="ln504">            // We also assume that each element runs same OSR</a>
+<a name="ln505">            uint8_t samples = 1U &lt;&lt; (dev.settings.osr_h - 1U);</a>
+<a name="ln506">            ri_delay_ms (bme280_max_meas_time (samples));</a>
+<a name="ln507">            tsample = rd_sensor_timestamp_get();</a>
+<a name="ln508">            // BME280 returns to SLEEP after forced sample</a>
+<a name="ln509">            *mode = RD_SENSOR_CFG_SLEEP;</a>
+<a name="ln510">            break;</a>
+<a name="ln511"> </a>
+<a name="ln512">        case RD_SENSOR_CFG_CONTINUOUS:</a>
+<a name="ln513">            err_code = BME_TO_RUUVI_ERROR (bme280_set_sensor_mode (BME280_NORMAL_MODE, &amp;dev));</a>
+<a name="ln514">            break;</a>
+<a name="ln515"> </a>
+<a name="ln516">        default:</a>
+<a name="ln517">            err_code = RD_ERROR_INVALID_PARAM;</a>
+<a name="ln518">            break;</a>
+<a name="ln519">    }</a>
+<a name="ln520"> </a>
+<a name="ln521">    return err_code;</a>
+<a name="ln522">}</a>
+<a name="ln523"> </a>
+<a name="ln524">rd_status_t ri_bme280_mode_get (uint8_t * mode)</a>
+<a name="ln525">{</a>
+<a name="ln526">    if (NULL == mode) { return RD_ERROR_NULL; }</a>
+<a name="ln527"> </a>
+<a name="ln528">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln529">    uint8_t bme_mode = 0U;</a>
+<a name="ln530">    err_code = BME_TO_RUUVI_ERROR (bme280_get_sensor_mode (&amp;bme_mode, &amp;dev));</a>
+<a name="ln531"> </a>
+<a name="ln532">    if (RD_SUCCESS != err_code) { return err_code; }</a>
+<a name="ln533"> </a>
+<a name="ln534">    switch (bme_mode)</a>
+<a name="ln535">    {</a>
+<a name="ln536">        case BME280_SLEEP_MODE:</a>
+<a name="ln537">            *mode = RD_SENSOR_CFG_SLEEP;</a>
+<a name="ln538">            break;</a>
+<a name="ln539"> </a>
+<a name="ln540">        case BME280_FORCED_MODE:</a>
+<a name="ln541">            *mode = RD_SENSOR_CFG_SINGLE;</a>
+<a name="ln542">            break;</a>
+<a name="ln543"> </a>
+<a name="ln544">        case BME280_NORMAL_MODE:</a>
+<a name="ln545">            *mode = RD_SENSOR_CFG_CONTINUOUS;</a>
+<a name="ln546">            break;</a>
+<a name="ln547"> </a>
+<a name="ln548">        default:</a>
+<a name="ln549">            *mode = RD_SENSOR_ERR_INVALID;</a>
+<a name="ln550">            break;</a>
+<a name="ln551">    }</a>
+<a name="ln552"> </a>
+<a name="ln553">    return err_code;</a>
+<a name="ln554">}</a>
+<a name="ln555"> </a>
+<a name="ln556"> </a>
+<a name="ln557">rd_status_t ri_bme280_data_get (rd_sensor_data_t * const</a>
+<a name="ln558">                                p_data)</a>
+<a name="ln559">{</a>
+<a name="ln560">    if (NULL == p_data) { return RD_ERROR_NULL; }</a>
+<a name="ln561"> </a>
+<a name="ln562">    struct bme280_data comp_data;</a>
+<a name="ln563"> </a>
+<a name="ln564">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln565"> </a>
+<a name="ln566">    err_code = BME_TO_RUUVI_ERROR (bme280_get_sensor_data (BME280_ALL, &amp;comp_data, &amp;dev));</a>
+<a name="ln567"> </a>
+<a name="ln568">    if (RD_SUCCESS != err_code) { return err_code; }</a>
+<a name="ln569"> </a>
+<a name="ln570">    // Write tsample if we're in single mode, current time if we're in continuous mode</a>
+<a name="ln571">    // Leave sample time as invalid if forced mode is ongoing.</a>
+<a name="ln572">    uint8_t mode = 0U;</a>
+<a name="ln573">    err_code |= ri_bme280_mode_get (&amp;mode);</a>
+<a name="ln574"> </a>
+<a name="ln575">    if (RD_SENSOR_CFG_SLEEP == mode)           { p_data-&gt;timestamp_ms = tsample; }</a>
+<a name="ln576">    else if (RD_SENSOR_CFG_CONTINUOUS == mode) { p_data-&gt;timestamp_ms = rd_sensor_timestamp_get(); }</a>
+<a name="ln577">    else { RD_ERROR_CHECK (RD_ERROR_INTERNAL, ~RD_ERROR_FATAL); }</a>
+<a name="ln578"> </a>
+<a name="ln579">    // If we have valid data, return it.</a>
+<a name="ln580">    if (RD_UINT64_INVALID != p_data-&gt;timestamp_ms)</a>
+<a name="ln581">    {</a>
+<a name="ln582">        rd_sensor_data_t d_environmental = {0};</a>
+<a name="ln583">        rd_sensor_data_fields_t env_fields = {.bitfield = 0};</a>
+<a name="ln584">        float env_values[3];</a>
+<a name="ln585">        env_values[0] = (float) comp_data.humidity;</a>
+<a name="ln586">        env_values[1] = (float) comp_data.pressure;</a>
+<a name="ln587">        env_values[2] = (float) comp_data.temperature;</a>
+<a name="ln588">        env_fields.datas.humidity_rh = 1U;</a>
+<a name="ln589">        env_fields.datas.pressure_pa = 1U;</a>
+<a name="ln590">        env_fields.datas.temperature_c = 1U;</a>
+<a name="ln591">        d_environmental.data = env_values;</a>
+<a name="ln592">        d_environmental.fields = env_fields;</a>
+<a name="ln593">        d_environmental.valid  = env_fields;</a>
+<a name="ln594">        rd_sensor_data_populate (p_data,</a>
+<a name="ln595">                                 &amp;d_environmental,</a>
+<a name="ln596">                                 p_data-&gt;fields);</a>
+<a name="ln597">    }</a>
+<a name="ln598"> </a>
+<a name="ln599">    return err_code;</a>
+<a name="ln600">}</a>
+<a name="ln601">/*@}*/</a>
+<a name="ln602">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="70"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'character'.</p></div>
+<div class="balloon" rel="71"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'character'.</p></div>
+<div class="balloon" rel="72"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'character'.</p></div>
+<div class="balloon" rel="73"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'character'.</p></div>
+<div class="balloon" rel="73"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2516/" target="_blank">V2516</a> The 'if' ... 'else if' construct should be terminated with an 'else' statement.</p></div>
+<div class="balloon" rel="66"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="88"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '*' operator should have the same essential type. The current types are: 'floating' and 'unsigned'.</p></div>
+<div class="balloon" rel="91"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2004/" target="_blank">V2004</a> Explicit conversion from 'float' type to unsigned integer type: (uint32_t) time</p></div>
+<div class="balloon" rel="107"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2520/" target="_blank">V2520</a> Every switch-clause should be terminated by an unconditional 'break' statement.</p></div>
+<div class="balloon" rel="146"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U << 3U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="167"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="168"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="169"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="95"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="176"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="176"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2537/" target="_blank">V2537</a> Functions should not have unused parameters. Consider inspecting the parameter: 'bus'.</p></div>
+<div class="balloon" rel="176"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2537/" target="_blank">V2537</a> Functions should not have unused parameters. Consider inspecting the parameter: 'handle'.</p></div>
+<div class="balloon" rel="198"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="199"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="200"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="201"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="202"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="203"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="204"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="205"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="206"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="207"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="209"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="214"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The left operand '1' of the '<<' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="191"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="229"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="229"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="230"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="230"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="231"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="231"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="232"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="232"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="233"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="233"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="234"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="234"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="235"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="235"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="235"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2516/" target="_blank">V2516</a> The 'if' ... 'else if' construct should be terminated with an 'else' statement.</p></div>
+<div class="balloon" rel="221"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="247"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2507/" target="_blank">V2507</a> The body of the 'if' statement should be enclosed in braces.</p></div>
+<div class="balloon" rel="240"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="251"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="266"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2507/" target="_blank">V2507</a> The body of the 'if' statement should be enclosed in braces.</p></div>
+<div class="balloon" rel="259"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="270"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="299"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '~((1U << 1U) | (1U << 3U)) & (* dsp)' of the '&&' operator should not have the essential 'unsigned' type.</p></div>
+<div class="balloon" rel="308"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="309"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="310"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="311"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="312"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '1' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="312"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '|=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="313"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The left operand '1' of the '<<' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="313"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '1 << 1' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="313"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '|=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="314"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The left operand '1' of the '<<' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="314"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '1 << 2' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="314"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '|=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="315"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The left operand '1' of the '<<' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="315"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '1 << 3' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="315"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '|=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="325"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'dev.settings.filter' variable was assigned the same value.</p></div>
+<div class="balloon" rel="325"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="326"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '1U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="328"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="330"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="331"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '2U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="335"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="336"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '4U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="340"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="341"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '8U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="346"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="347"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '16U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="351"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="363"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'dev.settings.osr_h' variable was assigned the same value.</p></div>
+<div class="balloon" rel="363"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="364"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'dev.settings.osr_p' variable was assigned the same value.</p></div>
+<div class="balloon" rel="364"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="365"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'dev.settings.osr_t' variable was assigned the same value.</p></div>
+<div class="balloon" rel="365"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="366"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '1U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="368"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="370"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="371"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="372"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="373"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '2U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="377"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="378"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="379"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="380"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '4U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="384"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="385"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="386"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="387"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '8U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="390"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v560/" target="_blank">V560</a> A part of conditional expression is always true: (0xF1U).</p></div>
+<div class="balloon" rel="389"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '(0xF1U)' of the '||' operator should not have the essential 'unsigned' type.</p></div>
+<div class="balloon" rel="392"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="393"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="394"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="395"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '16U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="399"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="278"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2009/" target="_blank">V2009</a> Consider rendering the 'dsp' pointer as a pointer to const.</p></div>
+<div class="balloon" rel="278"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="423"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '!=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="425"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U << 1U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="430"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '2U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="434"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '4U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="438"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '8U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="442"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '16U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="427"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2519/" target="_blank">V2519</a> The 'default' label is missing in 'switch' statement.</p></div>
+<div class="balloon" rel="450"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '!=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="451"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '!=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="453"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U << 3U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="458"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '2U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="462"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '4U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="466"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '8U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="470"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '16U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="455"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2519/" target="_blank">V2519</a> The 'default' label is missing in 'switch' statement.</p></div>
+<div class="balloon" rel="409"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="483"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="487"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Constant expression of the case label should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="491"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Constant expression of the case label should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="497"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF4U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="505"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '1U << (dev.settings.osr_h - 1U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="509"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="512"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Constant expression of the case label should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="478"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="537"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="541"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF3U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="545"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF4U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="549"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE0U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="524"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="557"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

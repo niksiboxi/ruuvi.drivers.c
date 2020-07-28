@@ -1,0 +1,470 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ruuvi_interface_shtcx.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;ruuvi_driver_enabled_modules.h&quot;</a>
+<a name="ln2">#if RI_SHTCX_ENABLED || DOXYGEN</a>
+<a name="ln3">// Ruuvi headers</a>
+<a name="ln4">#include &quot;ruuvi_driver_error.h&quot;</a>
+<a name="ln5">#include &quot;ruuvi_driver_sensor.h&quot;</a>
+<a name="ln6">#include &quot;ruuvi_interface_shtcx.h&quot;</a>
+<a name="ln7">#include &quot;ruuvi_interface_environmental.h&quot;</a>
+<a name="ln8">#include &quot;ruuvi_interface_gpio.h&quot;</a>
+<a name="ln9">#include &quot;ruuvi_interface_i2c.h&quot;</a>
+<a name="ln10">#include &quot;ruuvi_interface_shtcx.h&quot;</a>
+<a name="ln11">#include &quot;ruuvi_interface_rtc.h&quot;</a>
+<a name="ln12">#include &quot;ruuvi_interface_yield.h&quot;</a>
+<a name="ln13"> </a>
+<a name="ln14">#include &lt;string.h&gt;</a>
+<a name="ln15"> </a>
+<a name="ln16">// Sensirion driver.</a>
+<a name="ln17">#include &quot;shtc1.h&quot;</a>
+<a name="ln18"> </a>
+<a name="ln19">/**</a>
+<a name="ln20"> * @addtogroup SHTCX</a>
+<a name="ln21"> */</a>
+<a name="ln22">/*@{*/</a>
+<a name="ln23"> </a>
+<a name="ln24">/**</a>
+<a name="ln25"> * @file ruuvi_interface_shtcx.h</a>
+<a name="ln26"> * @author Otso Jousimaa &lt;otso@ojousima.net&gt;</a>
+<a name="ln27"> * @date 2019-08-10</a>
+<a name="ln28"> * @copyright Ruuvi Innovations Ltd, license BSD-3-Clause.</a>
+<a name="ln29"> *</a>
+<a name="ln30"> * SHTC temperature and humidity sensor driver.</a>
+<a name="ln31"> *</a>
+<a name="ln32"> */</a>
+<a name="ln33"> </a>
+<a name="ln34">/** @brief Macro for checking &quot;ignored&quot; parameters NO_CHANGE, MIN, MAX, DEFAULT */</a>
+<a name="ln35">#define RETURN_SUCCESS_ON_VALID(param) do {\</a>
+<a name="ln36">            if(RD_SENSOR_CFG_DEFAULT   == param ||\</a>
+<a name="ln37">               RD_SENSOR_CFG_MIN       == param ||\</a>
+<a name="ln38">               RD_SENSOR_CFG_MAX       == param ||\</a>
+<a name="ln39">               RD_SENSOR_CFG_NO_CHANGE == param   \</a>
+<a name="ln40">             ) return RD_SUCCESS;\</a>
+<a name="ln41">           } while(0)</a>
+<a name="ln42"> </a>
+<a name="ln43">/** @brief Macro for checking that sensor is in sleep mode before configuration */</a>
+<a name="ln44">#define VERIFY_SENSOR_SLEEPS() do { \</a>
+<a name="ln45">          uint8_t MACRO_MODE = 0; \</a>
+<a name="ln46">          ri_shtcx_mode_get(&amp;MACRO_MODE); \</a>
+<a name="ln47">          if(RD_SENSOR_CFG_SLEEP != MACRO_MODE) { return RD_ERROR_INVALID_STATE; } \</a>
+<a name="ln48">          } while(0)</a>
+<a name="ln49"> </a>
+<a name="ln50"> </a>
+<a name="ln51"> </a>
+<a name="ln52">static uint64_t m_tsample;           //!&lt; Timestamp of sample.</a>
+<a name="ln53">static bool m_autorefresh;           //!&lt; Flag to refresh data on data_get.</a>
+<a name="ln54">static int32_t m_temperature;        //!&lt; Last measured temperature.</a>
+<a name="ln55">static int32_t m_humidity;           //!&lt; Last measured humidity.</a>
+<a name="ln56">static bool m_is_init;               //!&lt; Flag, is sensor init.</a>
+<a name="ln57">static const char m_sensor_name[] = &quot;SHTCX&quot;; //!&lt; Human-readable name of the sensor.</a>
+<a name="ln58"> </a>
+<a name="ln59">#define STATUS_OK 0                  //!&lt; SHTC driver ok</a>
+<a name="ln60">#define STATUS_ERR_BAD_DATA (-1)     //!&lt; SHTC driver data invald</a>
+<a name="ln61">#define STATUS_CRC_FAIL (-2)         //!&lt; SHTC driver CRC error</a>
+<a name="ln62">#define STATUS_UNKNOWN_DEVICE (-3)   //!&lt; Invalid WHOAMI</a>
+<a name="ln63">#define STATUS_WAKEUP_FAILED (-4)    //!&lt; Device didn't wake up</a>
+<a name="ln64">#define STATUS_SLEEP_FAILED (-5)     //!&lt; Device didn't go to sleep</a>
+<a name="ln65"> </a>
+<a name="ln66">/**</a>
+<a name="ln67"> * @brief Convert error from SHTCX driver to appropriate NRF ERROR</a>
+<a name="ln68"> *</a>
+<a name="ln69"> * @param[in] rslt error code from SHTCX driver</a>
+<a name="ln70"> * @return    Ruuvi error code corresponding to SHTCX error code</a>
+<a name="ln71"> */</a>
+<a name="ln72">static rd_status_t SHTCX_TO_RUUVI_ERROR (const int16_t rslt)</a>
+<a name="ln73">{</a>
+<a name="ln74">    if (STATUS_OK == rslt)                 { return RD_SUCCESS; }</a>
+<a name="ln75"> </a>
+<a name="ln76">    rd_status_t err_code = RD_ERROR_INTERNAL;</a>
+<a name="ln77"> </a>
+<a name="ln78">    if (STATUS_UNKNOWN_DEVICE == rslt)     { err_code = RD_ERROR_NOT_FOUND; }</a>
+<a name="ln79">    else if (STATUS_ERR_BAD_DATA == rslt)  { err_code = RD_ERROR_INVALID_DATA; }</a>
+<a name="ln80">    else if (STATUS_CRC_FAIL == rslt)      { err_code = RD_ERROR_INVALID_DATA; }</a>
+<a name="ln81">    else if (STATUS_WAKEUP_FAILED == rslt) { err_code = RD_ERROR_INTERNAL; }</a>
+<a name="ln82">    else if (STATUS_SLEEP_FAILED == rslt)  { err_code = RD_ERROR_INTERNAL; }</a>
+<a name="ln83"> </a>
+<a name="ln84">    return err_code;</a>
+<a name="ln85">}</a>
+<a name="ln86"> </a>
+<a name="ln87">rd_status_t ri_shtcx_init (rd_sensor_t *</a>
+<a name="ln88">                           environmental_sensor, rd_bus_t bus, uint8_t handle)</a>
+<a name="ln89">{</a>
+<a name="ln90">    if (NULL == environmental_sensor) { return RD_ERROR_NULL; }</a>
+<a name="ln91"> </a>
+<a name="ln92">    if (m_is_init) { return RD_ERROR_INVALID_STATE; }</a>
+<a name="ln93"> </a>
+<a name="ln94">    rd_sensor_initialize (environmental_sensor);</a>
+<a name="ln95">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln96">    size_t retries = 0;</a>
+<a name="ln97"> </a>
+<a name="ln98">    switch (bus)</a>
+<a name="ln99">    {</a>
+<a name="ln100">        case RD_BUS_I2C:</a>
+<a name="ln101">            do</a>
+<a name="ln102">            {</a>
+<a name="ln103">                err_code = SHTCX_TO_RUUVI_ERROR (shtc1_probe());</a>
+<a name="ln104">                retries++;</a>
+<a name="ln105">            } while (RD_ERROR_INVALID_DATA == err_code &amp;&amp; retries &lt; 5);</a>
+<a name="ln106"> </a>
+<a name="ln107">            break;</a>
+<a name="ln108"> </a>
+<a name="ln109">        default:</a>
+<a name="ln110">            return  RD_ERROR_INVALID_PARAM;</a>
+<a name="ln111">    }</a>
+<a name="ln112"> </a>
+<a name="ln113">    if (RD_SUCCESS != err_code) { err_code = RD_ERROR_NOT_FOUND; }</a>
+<a name="ln114"> </a>
+<a name="ln115">    if (RD_SUCCESS == err_code)</a>
+<a name="ln116">    {</a>
+<a name="ln117">        // Sensirion driver delays high-power mode time in any case.</a>
+<a name="ln118">        // Explicitly entering low-power mode has no effect.</a>
+<a name="ln119">        shtc1_enable_low_power_mode (0);</a>
+<a name="ln120">        environmental_sensor-&gt;init              = ri_shtcx_init;</a>
+<a name="ln121">        environmental_sensor-&gt;uninit            = ri_shtcx_uninit;</a>
+<a name="ln122">        environmental_sensor-&gt;samplerate_set    = ri_shtcx_samplerate_set;</a>
+<a name="ln123">        environmental_sensor-&gt;samplerate_get    = ri_shtcx_samplerate_get;</a>
+<a name="ln124">        environmental_sensor-&gt;resolution_set    = ri_shtcx_resolution_set;</a>
+<a name="ln125">        environmental_sensor-&gt;resolution_get    = ri_shtcx_resolution_get;</a>
+<a name="ln126">        environmental_sensor-&gt;scale_set         = ri_shtcx_scale_set;</a>
+<a name="ln127">        environmental_sensor-&gt;scale_get         = ri_shtcx_scale_get;</a>
+<a name="ln128">        environmental_sensor-&gt;dsp_set           = ri_shtcx_dsp_set;</a>
+<a name="ln129">        environmental_sensor-&gt;dsp_get           = ri_shtcx_dsp_get;</a>
+<a name="ln130">        environmental_sensor-&gt;mode_set          = ri_shtcx_mode_set;</a>
+<a name="ln131">        environmental_sensor-&gt;mode_get          = ri_shtcx_mode_get;</a>
+<a name="ln132">        environmental_sensor-&gt;data_get          = ri_shtcx_data_get;</a>
+<a name="ln133">        environmental_sensor-&gt;configuration_set = rd_sensor_configuration_set;</a>
+<a name="ln134">        environmental_sensor-&gt;configuration_get = rd_sensor_configuration_get;</a>
+<a name="ln135">        environmental_sensor-&gt;name              = m_sensor_name;</a>
+<a name="ln136">        environmental_sensor-&gt;provides.datas.temperature_c = 1;</a>
+<a name="ln137">        environmental_sensor-&gt;provides.datas.humidity_rh = 1;</a>
+<a name="ln138">        m_tsample = RD_UINT64_INVALID;</a>
+<a name="ln139">        m_is_init = true;</a>
+<a name="ln140">    }</a>
+<a name="ln141"> </a>
+<a name="ln142">    return err_code;</a>
+<a name="ln143">}</a>
+<a name="ln144"> </a>
+<a name="ln145">rd_status_t ri_shtcx_uninit (rd_sensor_t * sensor,</a>
+<a name="ln146">                             rd_bus_t bus, uint8_t handle)</a>
+<a name="ln147">{</a>
+<a name="ln148">    if (NULL == sensor) { return RD_ERROR_NULL; }</a>
+<a name="ln149"> </a>
+<a name="ln150">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln151">    shtc1_enable_low_power_mode (1);</a>
+<a name="ln152">    rd_sensor_uninitialize (sensor);</a>
+<a name="ln153">    m_tsample = RD_UINT64_INVALID;</a>
+<a name="ln154">    m_temperature = RD_INT32_INVALID;</a>
+<a name="ln155">    m_humidity = RD_INT32_INVALID;</a>
+<a name="ln156">    m_is_init = false;</a>
+<a name="ln157">    m_autorefresh = false;</a>
+<a name="ln158">    return err_code;</a>
+<a name="ln159">}</a>
+<a name="ln160"> </a>
+<a name="ln161">rd_status_t ri_shtcx_samplerate_set (uint8_t * samplerate)</a>
+<a name="ln162">{</a>
+<a name="ln163">    if (NULL == samplerate) { return RD_ERROR_NULL; }</a>
+<a name="ln164"> </a>
+<a name="ln165">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln166">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln167"> </a>
+<a name="ln168">    if (RD_SENSOR_CFG_DEFAULT == *samplerate)  { *samplerate = RD_SENSOR_CFG_DEFAULT; }</a>
+<a name="ln169">    else if (RD_SENSOR_CFG_NO_CHANGE == *samplerate) { *samplerate = RD_SENSOR_CFG_DEFAULT; }</a>
+<a name="ln170">    else if (RD_SENSOR_CFG_MIN == *samplerate) { *samplerate = RD_SENSOR_CFG_DEFAULT; }</a>
+<a name="ln171">    else if (RD_SENSOR_CFG_MAX == *samplerate) {*samplerate = RD_SENSOR_CFG_DEFAULT; }</a>
+<a name="ln172">    else { *samplerate = RD_SENSOR_ERR_NOT_SUPPORTED; err_code |= RD_ERROR_NOT_SUPPORTED; }</a>
+<a name="ln173"> </a>
+<a name="ln174">    return err_code;</a>
+<a name="ln175">}</a>
+<a name="ln176"> </a>
+<a name="ln177">rd_status_t ri_shtcx_samplerate_get (uint8_t * samplerate)</a>
+<a name="ln178">{</a>
+<a name="ln179">    if (NULL == samplerate) { return RD_ERROR_NULL; }</a>
+<a name="ln180"> </a>
+<a name="ln181">    *samplerate = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln182">    return RD_SUCCESS;</a>
+<a name="ln183">}</a>
+<a name="ln184"> </a>
+<a name="ln185">rd_status_t ri_shtcx_resolution_set (uint8_t * resolution)</a>
+<a name="ln186">{</a>
+<a name="ln187">    if (NULL == resolution) { return RD_ERROR_NULL; }</a>
+<a name="ln188"> </a>
+<a name="ln189">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln190">    uint8_t original = *resolution;</a>
+<a name="ln191">    *resolution = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln192">    RETURN_SUCCESS_ON_VALID (original);</a>
+<a name="ln193">    return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln194">}</a>
+<a name="ln195"> </a>
+<a name="ln196">rd_status_t ri_shtcx_resolution_get (uint8_t * resolution)</a>
+<a name="ln197">{</a>
+<a name="ln198">    if (NULL == resolution) { return RD_ERROR_NULL; }</a>
+<a name="ln199"> </a>
+<a name="ln200">    *resolution = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln201">    return RD_SUCCESS;</a>
+<a name="ln202">}</a>
+<a name="ln203"> </a>
+<a name="ln204">rd_status_t ri_shtcx_scale_set (uint8_t * scale)</a>
+<a name="ln205">{</a>
+<a name="ln206">    if (NULL == scale) { return RD_ERROR_NULL; }</a>
+<a name="ln207"> </a>
+<a name="ln208">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln209">    uint8_t original = *scale;</a>
+<a name="ln210">    *scale = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln211">    RETURN_SUCCESS_ON_VALID (original);</a>
+<a name="ln212">    return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln213">}</a>
+<a name="ln214"> </a>
+<a name="ln215">rd_status_t ri_shtcx_scale_get (uint8_t * scale)</a>
+<a name="ln216">{</a>
+<a name="ln217">    if (NULL == scale) { return RD_ERROR_NULL; }</a>
+<a name="ln218"> </a>
+<a name="ln219">    *scale = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln220">    return RD_SUCCESS;</a>
+<a name="ln221">}</a>
+<a name="ln222"> </a>
+<a name="ln223">rd_status_t ri_shtcx_dsp_set (uint8_t * dsp, uint8_t * parameter)</a>
+<a name="ln224">{</a>
+<a name="ln225">    if (NULL == dsp || NULL == parameter) { return RD_ERROR_NULL; }</a>
+<a name="ln226"> </a>
+<a name="ln227">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln228"> </a>
+<a name="ln229">    // Validate configuration</a>
+<a name="ln230">    if ( (RD_SENSOR_CFG_DEFAULT  != *parameter</a>
+<a name="ln231">            &amp;&amp; RD_SENSOR_CFG_MIN   != *parameter</a>
+<a name="ln232">            &amp;&amp; RD_SENSOR_CFG_MAX   != *parameter) ||</a>
+<a name="ln233">            (RD_SENSOR_DSP_LAST  != *dsp))</a>
+<a name="ln234">    {</a>
+<a name="ln235">        return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln236">    }</a>
+<a name="ln237"> </a>
+<a name="ln238">    return RD_SUCCESS;</a>
+<a name="ln239">}</a>
+<a name="ln240"> </a>
+<a name="ln241">rd_status_t ri_shtcx_dsp_get (uint8_t * dsp, uint8_t * parameter)</a>
+<a name="ln242">{</a>
+<a name="ln243">    if (NULL == dsp || NULL == parameter) { return RD_ERROR_NULL; }</a>
+<a name="ln244"> </a>
+<a name="ln245">    // Only default is available</a>
+<a name="ln246">    *dsp       = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln247">    *parameter = RD_SENSOR_CFG_DEFAULT;</a>
+<a name="ln248">    return RD_SUCCESS;</a>
+<a name="ln249">}</a>
+<a name="ln250"> </a>
+<a name="ln251">// Start single on command, mark autorefresh with continuous</a>
+<a name="ln252">rd_status_t ri_shtcx_mode_set (uint8_t * mode)</a>
+<a name="ln253">{</a>
+<a name="ln254">    if (NULL == mode) { return RD_ERROR_NULL; }</a>
+<a name="ln255"> </a>
+<a name="ln256">    // Enter sleep by default and by explicit sleep commmand</a>
+<a name="ln257">    if (RD_SENSOR_CFG_SLEEP == *mode || RD_SENSOR_CFG_DEFAULT == *mode)</a>
+<a name="ln258">    {</a>
+<a name="ln259">        m_autorefresh = false;</a>
+<a name="ln260">        *mode = RD_SENSOR_CFG_SLEEP;</a>
+<a name="ln261">        return RD_SUCCESS;</a>
+<a name="ln262">    }</a>
+<a name="ln263"> </a>
+<a name="ln264">    if (RD_SENSOR_CFG_SINGLE == *mode)</a>
+<a name="ln265">    {</a>
+<a name="ln266">        // Do nothing if sensor is in continuous mode</a>
+<a name="ln267">        uint8_t current_mode;</a>
+<a name="ln268">        ri_shtcx_mode_get (&amp;current_mode);</a>
+<a name="ln269"> </a>
+<a name="ln270">        if (RD_SENSOR_CFG_CONTINUOUS == current_mode)</a>
+<a name="ln271">        {</a>
+<a name="ln272">            *mode = RD_SENSOR_CFG_CONTINUOUS;</a>
+<a name="ln273">            // Start first measurement</a>
+<a name="ln274">            shtc1_measure();</a>
+<a name="ln275">            return RD_ERROR_INVALID_STATE;</a>
+<a name="ln276">        }</a>
+<a name="ln277"> </a>
+<a name="ln278">        // Enter sleep after measurement</a>
+<a name="ln279">        m_autorefresh = false;</a>
+<a name="ln280">        *mode = RD_SENSOR_CFG_SLEEP;</a>
+<a name="ln281">        m_tsample = rd_sensor_timestamp_get();</a>
+<a name="ln282">        return SHTCX_TO_RUUVI_ERROR (shtc1_measure_blocking_read (&amp;m_temperature, &amp;m_humidity));</a>
+<a name="ln283">    }</a>
+<a name="ln284"> </a>
+<a name="ln285">    if (RD_SENSOR_CFG_CONTINUOUS == *mode)</a>
+<a name="ln286">    {</a>
+<a name="ln287">        m_autorefresh = true;</a>
+<a name="ln288">        return RD_SUCCESS;</a>
+<a name="ln289">    }</a>
+<a name="ln290"> </a>
+<a name="ln291">    return RD_ERROR_INVALID_PARAM;</a>
+<a name="ln292">}</a>
+<a name="ln293"> </a>
+<a name="ln294">rd_status_t ri_shtcx_mode_get (uint8_t * mode)</a>
+<a name="ln295">{</a>
+<a name="ln296">    if (NULL == mode) { return RD_ERROR_NULL; }</a>
+<a name="ln297"> </a>
+<a name="ln298">    if (m_autorefresh)</a>
+<a name="ln299">    {</a>
+<a name="ln300">        *mode = RD_SENSOR_CFG_CONTINUOUS;</a>
+<a name="ln301">    }</a>
+<a name="ln302"> </a>
+<a name="ln303">    if (!m_autorefresh)</a>
+<a name="ln304">    {</a>
+<a name="ln305">        *mode = RD_SENSOR_CFG_SLEEP;</a>
+<a name="ln306">    }</a>
+<a name="ln307"> </a>
+<a name="ln308">    return RD_SUCCESS;</a>
+<a name="ln309">}</a>
+<a name="ln310"> </a>
+<a name="ln311">rd_status_t ri_shtcx_data_get (rd_sensor_data_t * const</a>
+<a name="ln312">                               p_data)</a>
+<a name="ln313">{</a>
+<a name="ln314">    if (NULL == p_data) { return RD_ERROR_NULL; }</a>
+<a name="ln315"> </a>
+<a name="ln316">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln317"> </a>
+<a name="ln318">    if (m_autorefresh)</a>
+<a name="ln319">    {</a>
+<a name="ln320">        /* Sensor sleep clears measured values, blocking read required.</a>
+<a name="ln321">        // read sensor values</a>
+<a name="ln322">        err_code |= SHTCX_TO_RUUVI_ERROR(shtc1_read(&amp;m_temperature, &amp;m_humidity));</a>
+<a name="ln323">        // Start next measurement</a>
+<a name="ln324">        err_code |= SHTCX_TO_RUUVI_ERROR(shtc1_measure());</a>
+<a name="ln325">        */</a>
+<a name="ln326">        err_code |= SHTCX_TO_RUUVI_ERROR (shtc1_measure_blocking_read (&amp;m_temperature,</a>
+<a name="ln327">                                          &amp;m_humidity));</a>
+<a name="ln328">        m_tsample = rd_sensor_timestamp_get();</a>
+<a name="ln329">    }</a>
+<a name="ln330"> </a>
+<a name="ln331">    if (RD_SUCCESS == err_code &amp;&amp; RD_UINT64_INVALID != m_tsample)</a>
+<a name="ln332">    {</a>
+<a name="ln333">        rd_sensor_data_t d_environmental;</a>
+<a name="ln334">        rd_sensor_data_fields_t env_fields = {.bitfield = 0};</a>
+<a name="ln335">        float env_values[2];</a>
+<a name="ln336">        env_values[0] = m_humidity / 1000.0f;</a>
+<a name="ln337">        env_values[1] = m_temperature / 1000.0f;</a>
+<a name="ln338">        env_fields.datas.humidity_rh = 1;</a>
+<a name="ln339">        env_fields.datas.temperature_c = 1;</a>
+<a name="ln340">        d_environmental.data = env_values;</a>
+<a name="ln341">        d_environmental.valid  = env_fields;</a>
+<a name="ln342">        d_environmental.fields = env_fields;</a>
+<a name="ln343">        d_environmental.timestamp_ms = m_tsample;</a>
+<a name="ln344">        rd_sensor_data_populate (p_data,</a>
+<a name="ln345">                                 &amp;d_environmental,</a>
+<a name="ln346">                                 p_data-&gt;fields);</a>
+<a name="ln347">    }</a>
+<a name="ln348"> </a>
+<a name="ln349">    return err_code;</a>
+<a name="ln350">}</a>
+<a name="ln351"> </a>
+<a name="ln352">/**</a>
+<a name="ln353"> * @brief Implement sleep function for SHTC driver.</a>
+<a name="ln354"> *</a>
+<a name="ln355"> * Sleep for a given number of microseconds. The function should delay the</a>
+<a name="ln356"> * execution for at least the given time, but may also sleep longer.</a>
+<a name="ln357"> *</a>
+<a name="ln358"> * If delay is at least millisecond,</a>
+<a name="ln359"> * The function sleeps given number of milliseconds, rounded up,</a>
+<a name="ln360"> * to benefit from low-power sleep in millisecond delay.</a>
+<a name="ln361"> *</a>
+<a name="ln362"> * @param[in] useconds the sleep time in microseconds</a>
+<a name="ln363"> * @note      sensirion interface signature isn't const, can't be const here.</a>
+<a name="ln364"> */</a>
+<a name="ln365">void sensirion_sleep_usec (uint32_t useconds)</a>
+<a name="ln366">{</a>
+<a name="ln367">    if (useconds &lt; 1000)</a>
+<a name="ln368">    {</a>
+<a name="ln369">        ri_delay_us (useconds);</a>
+<a name="ln370">    }</a>
+<a name="ln371">    else</a>
+<a name="ln372">    {</a>
+<a name="ln373">        ri_delay_ms ( (useconds / 1000) + 1);</a>
+<a name="ln374">    }</a>
+<a name="ln375">}</a>
+<a name="ln376"> </a>
+<a name="ln377">/*@}*/</a>
+<a name="ln378"> </a>
+<a name="ln379">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="81"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'err_code' variable was assigned the same value.</p></div>
+<div class="balloon" rel="82"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v1048/" target="_blank">V1048</a> The 'err_code' variable was assigned the same value.</p></div>
+<div class="balloon" rel="82"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2516/" target="_blank">V2516</a> The 'if' ... 'else if' construct should be terminated with an 'else' statement.</p></div>
+<div class="balloon" rel="72"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="105"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '<' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="98"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2520/" target="_blank">V2520</a> Every switch-clause should be terminated by an unconditional 'break' statement.</p></div>
+<div class="balloon" rel="136"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="137"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="139"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+<div class="balloon" rel="87"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="87"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2537/" target="_blank">V2537</a> Functions should not have unused parameters. Consider inspecting the parameter: 'handle'.</p></div>
+<div class="balloon" rel="156"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+<div class="balloon" rel="157"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+<div class="balloon" rel="145"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="145"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2537/" target="_blank">V2537</a> Functions should not have unused parameters. Consider inspecting the parameter: 'bus'.</p></div>
+<div class="balloon" rel="145"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2537/" target="_blank">V2537</a> Functions should not have unused parameters. Consider inspecting the parameter: 'handle'.</p></div>
+<div class="balloon" rel="172"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="161"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="177"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="192"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2507/" target="_blank">V2507</a> The body of the 'if' statement should be enclosed in braces.</p></div>
+<div class="balloon" rel="185"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="196"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="211"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2507/" target="_blank">V2507</a> The body of the 'if' statement should be enclosed in braces.</p></div>
+<div class="balloon" rel="204"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="215"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="223"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2009/" target="_blank">V2009</a> Consider rendering the 'dsp', 'parameter' pointers as pointers to const. </p></div>
+<div class="balloon" rel="223"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="241"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="259"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+<div class="balloon" rel="260"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="272"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF4U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="279"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+<div class="balloon" rel="280"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="287"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+<div class="balloon" rel="252"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="300"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF4U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="305"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="294"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="336"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '/' operator should have the same essential type. The current types are: 'signed' and 'floating'.</p></div>
+<div class="balloon" rel="337"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '/' operator should have the same essential type. The current types are: 'signed' and 'floating'.</p></div>
+<div class="balloon" rel="338"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="339"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="311"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="367"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '<' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="373"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '/' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="373"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '+' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

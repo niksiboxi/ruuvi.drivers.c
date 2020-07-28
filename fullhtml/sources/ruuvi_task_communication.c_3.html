@@ -1,0 +1,156 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ruuvi_task_communication.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;ruuvi_driver_enabled_modules.h&quot;</a>
+<a name="ln2">#if RT_COMMUNICATION_ENABLED</a>
+<a name="ln3">#include &quot;ruuvi_driver_error.h&quot;</a>
+<a name="ln4">#include &quot;ruuvi_driver_sensor.h&quot;</a>
+<a name="ln5">#include &quot;ruuvi_interface_communication.h&quot;</a>
+<a name="ln6">#include &quot;ruuvi_interface_communication_radio.h&quot;</a>
+<a name="ln7">#include &quot;ruuvi_task_communication.h&quot;</a>
+<a name="ln8"> </a>
+<a name="ln9">#include &lt;stdio.h&gt;</a>
+<a name="ln10">#include &lt;inttypes.h&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#define MAC_BYTES     (6U)  //!&lt; Number of bytes in MAC address</a>
+<a name="ln13">#define ID_BYTES      (8U)  //!&lt; Number of bytes in device ID</a>
+<a name="ln14">#define CHAR_PER_BYTE (3U)  //!&lt; Char per byte in hexstr, including trailing NULL.</a>
+<a name="ln15">#define NULL_LEN      (1U) //!&lt; Length of trailing NULL.</a>
+<a name="ln16">#define BITS_PER_BYTE (8U)  //!&lt; Bits per byte.</a>
+<a name="ln17"> </a>
+<a name="ln18">/**</a>
+<a name="ln19"> * @brief convert U64 to hex string.</a>
+<a name="ln20"> *</a>
+<a name="ln21"> * Converts U64 into hex string, with option to leave most significant bytes out.</a>
+<a name="ln22"> * Adds ':' as delimiter.</a>
+<a name="ln23"> * e.g. u64_to_hexstr(0xAABBCCDDEEFF, str, 6) -&gt; &quot;AA:BB:CC:DD:EE:FF\0&quot;</a>
+<a name="ln24"> *</a>
+<a name="ln25"> * @param[in] value Value to convert.</a>
+<a name="ln26"> * @param[out] str String to print to.</a>
+<a name="ln27"> * @param[in] Length of string to print to, at least 3 * bytes.</a>
+<a name="ln28"> * @param[in] bytes Number of bytes to write.</a>
+<a name="ln29"> * @retval RD_SUCCESS on success.</a>
+<a name="ln30"> * @retval RD_ERROR_INVALID_LENGTH if string doesn't fit into given buffer.</a>
+<a name="ln31"> */</a>
+<a name="ln32">static rd_status_t u64_to_hexstr (const uint64_t value, char * const str,</a>
+<a name="ln33">                                  const size_t str_len, const uint8_t bytes)</a>
+<a name="ln34">{</a>
+<a name="ln35">    rd_status_t status = RD_SUCCESS;</a>
+<a name="ln36">    uint8_t bit_offset = BITS_PER_BYTE * (bytes - 1U);</a>
+<a name="ln37">    size_t written = 0;</a>
+<a name="ln38">    uint8_t num_delimiters = bytes - 1U;</a>
+<a name="ln39"> </a>
+<a name="ln40">    for (size_t ii = 0; (ii &lt; bytes) &amp;&amp; (str_len &gt; (written + NULL_LEN)); ii++)</a>
+<a name="ln41">    {</a>
+<a name="ln42">        uint8_t byte = (uint8_t) (value &gt;&gt; bit_offset);</a>
+<a name="ln43">        written += snprintf (str + written, str_len - written, &quot;%02X&quot;, byte);</a>
+<a name="ln44"> </a>
+<a name="ln45">        if ( (ii &lt; num_delimiters) &amp;&amp; (str_len &gt; written))</a>
+<a name="ln46">        {</a>
+<a name="ln47">            written += snprintf (str + written, str_len - written, &quot;:&quot;);</a>
+<a name="ln48">        }</a>
+<a name="ln49"> </a>
+<a name="ln50">        bit_offset -= BITS_PER_BYTE;</a>
+<a name="ln51">    }</a>
+<a name="ln52"> </a>
+<a name="ln53">    if ( (written + NULL_LEN) &lt; CHAR_PER_BYTE * bytes</a>
+<a name="ln54">            || (str_len &lt; written + NULL_LEN))</a>
+<a name="ln55">    {</a>
+<a name="ln56">        status |= RD_ERROR_INVALID_LENGTH;</a>
+<a name="ln57">    }</a>
+<a name="ln58"> </a>
+<a name="ln59">    return status;</a>
+<a name="ln60">}</a>
+<a name="ln61"> </a>
+<a name="ln62">rd_status_t rt_com_get_mac_str (char * const mac_str, const size_t mac_len)</a>
+<a name="ln63">{</a>
+<a name="ln64">    rd_status_t status = RD_SUCCESS;</a>
+<a name="ln65"> </a>
+<a name="ln66">    if (NULL == mac_str)</a>
+<a name="ln67">    {</a>
+<a name="ln68">        status = RD_ERROR_NULL;</a>
+<a name="ln69">    }</a>
+<a name="ln70">    else if (!ri_radio_is_init())</a>
+<a name="ln71">    {</a>
+<a name="ln72">        status |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln73">    }</a>
+<a name="ln74">    else</a>
+<a name="ln75">    {</a>
+<a name="ln76">        uint64_t mac;</a>
+<a name="ln77">        status |= ri_radio_address_get (&amp;mac);</a>
+<a name="ln78">        status |= u64_to_hexstr (mac, mac_str, mac_len, MAC_BYTES);</a>
+<a name="ln79">    }</a>
+<a name="ln80"> </a>
+<a name="ln81">    return status;</a>
+<a name="ln82">}</a>
+<a name="ln83"> </a>
+<a name="ln84">rd_status_t rt_com_get_id_str (char * const id_str, const size_t id_len)</a>
+<a name="ln85">{</a>
+<a name="ln86">    rd_status_t status = RD_SUCCESS;</a>
+<a name="ln87"> </a>
+<a name="ln88">    if (NULL == id_str)</a>
+<a name="ln89">    {</a>
+<a name="ln90">        status = RD_ERROR_NULL;</a>
+<a name="ln91">    }</a>
+<a name="ln92">    else</a>
+<a name="ln93">    {</a>
+<a name="ln94">        uint64_t id;</a>
+<a name="ln95">        status |= ri_comm_id_get (&amp;id);</a>
+<a name="ln96">        status |= u64_to_hexstr (id, id_str, id_len, ID_BYTES);</a>
+<a name="ln97">    }</a>
+<a name="ln98"> </a>
+<a name="ln99">    return status;</a>
+<a name="ln100">}</a>
+<a name="ln101"> </a>
+<a name="ln102">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="36"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(8U) * (bytes - 1U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="38"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'bytes - 1U' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="43"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2562/" target="_blank">V2562</a> Expressions with pointer type should not be used in the '+', '-', '+=' and '-=' operations.</p></div>
+<div class="balloon" rel="43"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Value of the expression should not be converted from the essential 'signed' type to the essential 'unsigned' type.</p></div>
+<div class="balloon" rel="43"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '+=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="47"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2562/" target="_blank">V2562</a> Expressions with pointer type should not be used in the '+', '-', '+=' and '-=' operations.</p></div>
+<div class="balloon" rel="47"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Value of the expression should not be converted from the essential 'signed' type to the essential 'unsigned' type.</p></div>
+<div class="balloon" rel="47"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '+=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="50"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(8U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

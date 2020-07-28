@@ -1,0 +1,1388 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ruuvi_interface_lis2dh12.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;ruuvi_driver_enabled_modules.h&quot;</a>
+<a name="ln2">#if (RI_LIS2DH12_ENABLED || DOXYGEN)</a>
+<a name="ln3">#include &quot;ruuvi_driver_error.h&quot;</a>
+<a name="ln4">#include &quot;ruuvi_driver_sensor.h&quot;</a>
+<a name="ln5">#include &quot;ruuvi_interface_lis2dh12.h&quot;</a>
+<a name="ln6">#include &quot;ruuvi_interface_spi_lis2dh12.h&quot;</a>
+<a name="ln7">#include &quot;ruuvi_interface_yield.h&quot;</a>
+<a name="ln8">#include &quot;ruuvi_interface_log.h&quot;</a>
+<a name="ln9">#include &quot;lis2dh12_reg.h&quot;</a>
+<a name="ln10"> </a>
+<a name="ln11">#include &lt;stdlib.h&gt;</a>
+<a name="ln12">#include &lt;string.h&gt;</a>
+<a name="ln13">#include &lt;stdio.h&gt;</a>
+<a name="ln14"> </a>
+<a name="ln15">#ifdef RUUVI_NRF5_SDK15_LIS2GH12_DEBUG</a>
+<a name="ln16">#ifndef RUUVI_NRF5_SDK15_LIS2GH12_LOG_LEVEL</a>
+<a name="ln17">#define RUUVI_NRF5_SDK15_LIS2GH12_LOG_LEVEL RI_LOG_LEVEL_DEBUG</a>
+<a name="ln18">#endif</a>
+<a name="ln19"> </a>
+<a name="ln20">#define LOGD(fmt, ...) \</a>
+<a name="ln21">  do { \</a>
+<a name="ln22">    char buff[1024] = {0}; \</a>
+<a name="ln23">    snprintf(buff, sizeof(buff), &quot;:%d:%s(): &quot; fmt, \</a>
+<a name="ln24">            __LINE__, __func__, ##__VA_ARGS__); \</a>
+<a name="ln25">            ri_log(RUUVI_NRF5_SDK15_LIS2GH12_LOG_LEVEL, buff); \</a>
+<a name="ln26">  } while (0)</a>
+<a name="ln27">#else</a>
+<a name="ln28">#define LOGD(fmt, ...)</a>
+<a name="ln29">#endif</a>
+<a name="ln30">/**</a>
+<a name="ln31"> * @addtogroup LIS2DH12</a>
+<a name="ln32"> */</a>
+<a name="ln33">/*@{*/</a>
+<a name="ln34">/**</a>
+<a name="ln35"> * @file ruuvi_interface_lis2dh12.c</a>
+<a name="ln36"> * @author Otso Jousimaa &lt;otso@ojousima.net&gt;</a>
+<a name="ln37"> * @date 2019-10-11</a>
+<a name="ln38"> * @copyright Ruuvi Innovations Ltd, license BSD-3-Clause.</a>
+<a name="ln39"> *</a>
+<a name="ln40"> * Implementation for LIS2DH12 basic usage. The implementation supports</a>
+<a name="ln41"> * different resolutions, samplerates, high-passing, activity interrupt</a>
+<a name="ln42"> * and FIFO.</a>
+<a name="ln43"> *</a>
+<a name="ln44"> * Requires STM lis2dh12 driver, available on GitHub under BSD-3 license.</a>
+<a name="ln45"> * Requires &quot;application_config.h&quot;, will only get compiled if LIS2DH12_ACCELERATION is defined.</a>
+<a name="ln46"> * Requires floats enabled in application.</a>
+<a name="ln47"> *</a>
+<a name="ln48"> */</a>
+<a name="ln49"> </a>
+<a name="ln50">#define NUM_AXIS    (3U) //!&lt; X, Y, Z.</a>
+<a name="ln51">#define NM_BIT_DIVEDER (64U) //!&lt; Normal mode uses 10 bits in 16 bit field, leading to 2^6 factor in results.</a>
+<a name="ln52">#define MOTION_THRESHOLD_MAX (0x7FU) // Highest threshold value allowed.</a>
+<a name="ln53"> </a>
+<a name="ln54">/** @brief Macro for checking that sensor is in sleep mode before configuration */</a>
+<a name="ln55">#define VERIFY_SENSOR_SLEEPS() do { \</a>
+<a name="ln56">          uint8_t MACRO_MODE = 0; \</a>
+<a name="ln57">          ri_lis2dh12_mode_get(&amp;MACRO_MODE); \</a>
+<a name="ln58">          if(RD_SENSOR_CFG_SLEEP != MACRO_MODE) { return RD_ERROR_INVALID_STATE; } \</a>
+<a name="ln59">          } while(0)</a>
+<a name="ln60"> </a>
+<a name="ln61">/** @brief Representation of 3*2 bytes buffer as 3*int16_t */</a>
+<a name="ln62">typedef union</a>
+<a name="ln63">{</a>
+<a name="ln64">    int16_t i16bit[NUM_AXIS]; //!&lt; Integer values</a>
+<a name="ln65">    uint8_t u8bit[2 * NUM_AXIS];  //!&lt; Buffer</a>
+<a name="ln66">} axis3bit16_t;</a>
+<a name="ln67"> </a>
+<a name="ln68">/** @brief Representation of 2 bytes buffer as int16_t */</a>
+<a name="ln69">typedef union</a>
+<a name="ln70">{</a>
+<a name="ln71">    int16_t i16bit;   //!&lt; Integer value</a>
+<a name="ln72">    uint8_t u8bit[2]; //!&lt; Buffer</a>
+<a name="ln73">} axis1bit16_t;</a>
+<a name="ln74"> </a>
+<a name="ln75">/**</a>
+<a name="ln76"> * @brief lis2dh12 sensor settings structure.</a>
+<a name="ln77"> */</a>
+<a name="ln78">#ifndef CEEDLING</a>
+<a name="ln79">static</a>
+<a name="ln80">#endif</a>
+<a name="ln81">ri_lis2dh12_dev dev = {0};</a>
+<a name="ln82"> </a>
+<a name="ln83">static const char m_acc_name[] = &quot;LIS2DH12&quot;;</a>
+<a name="ln84"> </a>
+<a name="ln85">static void lis2dh12_get_samples_selftest (axis3bit16_t * p_data_raw_acceleration)</a>
+<a name="ln86">{</a>
+<a name="ln87">    axis3bit16_t data_raw_acceleration = {0};</a>
+<a name="ln88">    int32_t axis_x = 0;</a>
+<a name="ln89">    int32_t axis_y = 0;</a>
+<a name="ln90">    int32_t axis_z = 0;</a>
+<a name="ln91">    // Start delay</a>
+<a name="ln92">    ri_delay_ms (SELF_TEST_DELAY_MS);</a>
+<a name="ln93">    // Discard first sample</a>
+<a name="ln94">    lis2dh12_acceleration_raw_get (&amp;dev.ctx, data_raw_acceleration.u8bit);</a>
+<a name="ln95"> </a>
+<a name="ln96">    // Obtain 5 no self test samples</a>
+<a name="ln97">    for (uint8_t i = 0; i &lt; SELF_TEST_SAMPLES_NUM; i++)</a>
+<a name="ln98">    {</a>
+<a name="ln99">        lis2dh12_acceleration_raw_get (&amp;dev.ctx, data_raw_acceleration.u8bit);</a>
+<a name="ln100">        axis_x += data_raw_acceleration.i16bit[0];</a>
+<a name="ln101">        axis_y += data_raw_acceleration.i16bit[1];</a>
+<a name="ln102">        axis_z += data_raw_acceleration.i16bit[2];</a>
+<a name="ln103">    }</a>
+<a name="ln104"> </a>
+<a name="ln105">    p_data_raw_acceleration-&gt;i16bit[0] = (int16_t) (axis_x / SELF_TEST_SAMPLES_NUM);</a>
+<a name="ln106">    p_data_raw_acceleration-&gt;i16bit[1] = (int16_t) (axis_y / SELF_TEST_SAMPLES_NUM);</a>
+<a name="ln107">    p_data_raw_acceleration-&gt;i16bit[2] = (int16_t) (axis_z / SELF_TEST_SAMPLES_NUM);</a>
+<a name="ln108">}</a>
+<a name="ln109"> </a>
+<a name="ln110">// Check that self-test values differ enough</a>
+<a name="ln111">static rd_status_t lis2dh12_verify_selftest (const axis3bit16_t * const new,</a>
+<a name="ln112">        const axis3bit16_t * const old)</a>
+<a name="ln113">{</a>
+<a name="ln114">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln115"> </a>
+<a name="ln116">    if (LIS2DH12_2g != dev.scale || LIS2DH12_NM_10bit != dev.resolution)</a>
+<a name="ln117">    {</a>
+<a name="ln118">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln119">    }</a>
+<a name="ln120">    else</a>
+<a name="ln121">    {</a>
+<a name="ln122">        // Calculate positive diffs of each axes and compare to expected change</a>
+<a name="ln123">        for (size_t ii = 0; ii &lt; NUM_AXIS; ii++)</a>
+<a name="ln124">        {</a>
+<a name="ln125">            int16_t diff = new-&gt;i16bit[ii] - old-&gt;i16bit[ii];</a>
+<a name="ln126">            //Compensate justification, check absolute difference</a>
+<a name="ln127">            diff /= NM_BIT_DIVEDER;</a>
+<a name="ln128"> </a>
+<a name="ln129">            if (0 &gt; diff) { diff = 0 - diff; }</a>
+<a name="ln130"> </a>
+<a name="ln131">            if (RI_LIS2DH12_SELFTEST_DIFF_MIN &gt; diff)</a>
+<a name="ln132">            {</a>
+<a name="ln133">                LOGD (&quot;diff &lt; min = %d\r\n&quot;, diff);</a>
+<a name="ln134">                err_code |= RD_ERROR_SELFTEST;</a>
+<a name="ln135">            }</a>
+<a name="ln136"> </a>
+<a name="ln137">            if (RI_LIS2DH12_SELFTEST_DIFF_MAX &lt; diff)</a>
+<a name="ln138">            {</a>
+<a name="ln139">                LOGD (&quot;diff &gt; max = %d\r\n&quot;, diff);</a>
+<a name="ln140">                err_code |= RD_ERROR_SELFTEST;</a>
+<a name="ln141">            }</a>
+<a name="ln142">        }</a>
+<a name="ln143">    }</a>
+<a name="ln144"> </a>
+<a name="ln145">    return err_code;</a>
+<a name="ln146">}</a>
+<a name="ln147"> </a>
+<a name="ln148">static rd_status_t dev_ctx_init (const rd_bus_t bus,</a>
+<a name="ln149">                                 const uint8_t handle)</a>
+<a name="ln150">{</a>
+<a name="ln151">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln152"> </a>
+<a name="ln153">    switch (bus)</a>
+<a name="ln154">    {</a>
+<a name="ln155">        case RD_BUS_SPI:</a>
+<a name="ln156">            dev.ctx.write_reg = &amp;ri_spi_lis2dh12_write;</a>
+<a name="ln157">            dev.ctx.read_reg = &amp;ri_spi_lis2dh12_read;</a>
+<a name="ln158">            break;</a>
+<a name="ln159"> </a>
+<a name="ln160">        case RD_BUS_I2C:</a>
+<a name="ln161">            err_code |= RD_ERROR_NOT_IMPLEMENTED;</a>
+<a name="ln162">            break;</a>
+<a name="ln163"> </a>
+<a name="ln164">        default:</a>
+<a name="ln165">            err_code |= RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln166">            break;</a>
+<a name="ln167">    }</a>
+<a name="ln168"> </a>
+<a name="ln169">    dev.handle = handle;</a>
+<a name="ln170">    dev.ctx.handle = &amp;dev.handle;</a>
+<a name="ln171">    dev.mode = RD_SENSOR_CFG_SLEEP;</a>
+<a name="ln172">    return err_code;</a>
+<a name="ln173">}</a>
+<a name="ln174"> </a>
+<a name="ln175">static rd_status_t check_whoami (void)</a>
+<a name="ln176">{</a>
+<a name="ln177">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln178">    uint8_t whoamI = 0;</a>
+<a name="ln179">    lis2dh12_device_id_get (&amp;dev.ctx, &amp;whoamI);</a>
+<a name="ln180"> </a>
+<a name="ln181">    if (whoamI != LIS2DH12_ID)</a>
+<a name="ln182">    {</a>
+<a name="ln183">        err_code |= RD_ERROR_NOT_FOUND;</a>
+<a name="ln184">    }</a>
+<a name="ln185"> </a>
+<a name="ln186">    return err_code;</a>
+<a name="ln187">}</a>
+<a name="ln188"> </a>
+<a name="ln189">static rd_status_t clear_sensor_state (void)</a>
+<a name="ln190">{</a>
+<a name="ln191">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln192">    int32_t lis_ret_code = LIS_SUCCESS;</a>
+<a name="ln193">    float ths = 0;</a>
+<a name="ln194">    // Disable FIFO, activity</a>
+<a name="ln195">    err_code |= ri_lis2dh12_fifo_use (false);</a>
+<a name="ln196">    err_code |= ri_lis2dh12_fifo_interrupt_use (false);</a>
+<a name="ln197">    err_code |= ri_lis2dh12_activity_interrupt_use (false, &amp;ths);</a>
+<a name="ln198">    // Enable temperature sensor</a>
+<a name="ln199">    lis_ret_code |= lis2dh12_temperature_meas_set (&amp;dev.ctx, LIS2DH12_TEMP_ENABLE);</a>
+<a name="ln200">    // Disable Block Data Update, allow values to update even if old is not read</a>
+<a name="ln201">    lis_ret_code |= lis2dh12_block_data_update_set (&amp;dev.ctx, PROPERTY_ENABLE);</a>
+<a name="ln202">    // Disable filtering</a>
+<a name="ln203">    lis_ret_code |= lis2dh12_high_pass_on_outputs_set (&amp;dev.ctx, PROPERTY_DISABLE);</a>
+<a name="ln204"> </a>
+<a name="ln205">    if (LIS_SUCCESS != lis_ret_code)</a>
+<a name="ln206">    {</a>
+<a name="ln207">        err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln208">    }</a>
+<a name="ln209"> </a>
+<a name="ln210">    return err_code;</a>
+<a name="ln211">}</a>
+<a name="ln212"> </a>
+<a name="ln213">static rd_status_t selftest (void)</a>
+<a name="ln214">{</a>
+<a name="ln215">    LOGD (&quot;begin\r\n&quot;);</a>
+<a name="ln216">    axis3bit16_t data_raw_acceleration_old = {0};</a>
+<a name="ln217">    axis3bit16_t data_raw_acceleration_new = {0};</a>
+<a name="ln218">    int32_t lis_ret_code = LIS_SUCCESS;</a>
+<a name="ln219">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln220">    // Set Output Data Rate for self-test</a>
+<a name="ln221">    dev.samplerate = LIS2DH12_ODR_400Hz;</a>
+<a name="ln222">    lis2dh12_data_rate_set (&amp;dev.ctx, dev.samplerate);</a>
+<a name="ln223">    // Set full scale to 2G for self-test</a>
+<a name="ln224">    dev.scale = LIS2DH12_2g;</a>
+<a name="ln225">    lis2dh12_full_scale_set (&amp;dev.ctx, dev.scale);</a>
+<a name="ln226">    // Set device in 10 bit mode</a>
+<a name="ln227">    dev.resolution = LIS2DH12_NM_10bit;</a>
+<a name="ln228">    lis2dh12_operating_mode_set (&amp;dev.ctx, dev.resolution);</a>
+<a name="ln229">    // Run self-test</a>
+<a name="ln230">    // turn self-test off.</a>
+<a name="ln231">    dev.selftest = LIS2DH12_ST_DISABLE;</a>
+<a name="ln232">    lis_ret_code = lis2dh12_self_test_set (&amp;dev.ctx, dev.selftest);</a>
+<a name="ln233">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln234">    lis2dh12_get_samples_selftest (&amp;data_raw_acceleration_old);</a>
+<a name="ln235">    dev.selftest = LIS2DH12_ST_POSITIVE;</a>
+<a name="ln236">    lis2dh12_self_test_set (&amp;dev.ctx, dev.selftest);</a>
+<a name="ln237">    lis2dh12_get_samples_selftest (&amp;data_raw_acceleration_new);</a>
+<a name="ln238">    lis_ret_code = lis2dh12_verify_selftest (&amp;data_raw_acceleration_new,</a>
+<a name="ln239">                   &amp;data_raw_acceleration_old);</a>
+<a name="ln240">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_SELFTEST;</a>
+<a name="ln241">    LOGD (&quot;selftest = LIS2DH12_ST_POSITIVE.Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln242">    dev.selftest = LIS2DH12_ST_NEGATIVE;</a>
+<a name="ln243">    lis2dh12_self_test_set (&amp;dev.ctx, dev.selftest);</a>
+<a name="ln244">    lis2dh12_get_samples_selftest (&amp;data_raw_acceleration_new);</a>
+<a name="ln245">    lis_ret_code = lis2dh12_verify_selftest (&amp;data_raw_acceleration_new,</a>
+<a name="ln246">                   &amp;data_raw_acceleration_old);</a>
+<a name="ln247">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_SELFTEST;</a>
+<a name="ln248">    LOGD (&quot;selftest = LIS2DH12_ST_NEGATIVE.Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln249">    // turn self-test off, keep error code in case we &quot;lose&quot; sensor after self-test</a>
+<a name="ln250">    dev.selftest = LIS2DH12_ST_DISABLE;</a>
+<a name="ln251">    lis_ret_code = lis2dh12_self_test_set (&amp;dev.ctx, dev.selftest);</a>
+<a name="ln252">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln253">    // Turn accelerometer off</a>
+<a name="ln254">    dev.samplerate = LIS2DH12_POWER_DOWN;</a>
+<a name="ln255">    lis_ret_code = lis2dh12_data_rate_set (&amp;dev.ctx, dev.samplerate);</a>
+<a name="ln256">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln257">    LOGD (&quot;end. Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln258">    return err_code;</a>
+<a name="ln259">}</a>
+<a name="ln260"> </a>
+<a name="ln261">rd_status_t ri_lis2dh12_init (rd_sensor_t * p_sensor, rd_bus_t bus, uint8_t handle)</a>
+<a name="ln262">{</a>
+<a name="ln263">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln264">    LOGD (&quot;begin\r\n&quot;);</a>
+<a name="ln265"> </a>
+<a name="ln266">    if (NULL == p_sensor)</a>
+<a name="ln267">    {</a>
+<a name="ln268">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln269">        LOGD (&quot;p_sensor. Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln270">    }</a>
+<a name="ln271">    else if (NULL != dev.ctx.write_reg)</a>
+<a name="ln272">    {</a>
+<a name="ln273">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln274">        LOGD (&quot;write_reg. Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln275">    }</a>
+<a name="ln276">    else</a>
+<a name="ln277">    {</a>
+<a name="ln278">        err_code |= dev_ctx_init (bus, handle);</a>
+<a name="ln279">        LOGD (&quot;dev_ctx_init. Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln280">        rd_sensor_initialize (p_sensor);</a>
+<a name="ln281">        p_sensor-&gt;name = m_acc_name;</a>
+<a name="ln282"> </a>
+<a name="ln283">        if (RD_SUCCESS == err_code)</a>
+<a name="ln284">        {</a>
+<a name="ln285">            err_code |= check_whoami();</a>
+<a name="ln286">            LOGD (&quot;check_whoami. Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln287">        }</a>
+<a name="ln288"> </a>
+<a name="ln289">        if (RD_SUCCESS == err_code)</a>
+<a name="ln290">        {</a>
+<a name="ln291">            err_code |= clear_sensor_state();</a>
+<a name="ln292">            LOGD (&quot;clear_sensor_state. Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln293">        }</a>
+<a name="ln294"> </a>
+<a name="ln295">        if (RD_SUCCESS == err_code)</a>
+<a name="ln296">        {</a>
+<a name="ln297">            err_code |= selftest();</a>
+<a name="ln298">            LOGD (&quot;selftest. Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln299">        }</a>
+<a name="ln300"> </a>
+<a name="ln301">        if (RD_SUCCESS == err_code)</a>
+<a name="ln302">        {</a>
+<a name="ln303">            p_sensor-&gt;init                  = ri_lis2dh12_init;</a>
+<a name="ln304">            p_sensor-&gt;uninit                = ri_lis2dh12_uninit;</a>
+<a name="ln305">            p_sensor-&gt;samplerate_set        = ri_lis2dh12_samplerate_set;</a>
+<a name="ln306">            p_sensor-&gt;samplerate_get        = ri_lis2dh12_samplerate_get;</a>
+<a name="ln307">            p_sensor-&gt;resolution_set        = ri_lis2dh12_resolution_set;</a>
+<a name="ln308">            p_sensor-&gt;resolution_get        = ri_lis2dh12_resolution_get;</a>
+<a name="ln309">            p_sensor-&gt;scale_set             = ri_lis2dh12_scale_set;</a>
+<a name="ln310">            p_sensor-&gt;scale_get             = ri_lis2dh12_scale_get;</a>
+<a name="ln311">            p_sensor-&gt;dsp_set               = ri_lis2dh12_dsp_set;</a>
+<a name="ln312">            p_sensor-&gt;dsp_get               = ri_lis2dh12_dsp_get;</a>
+<a name="ln313">            p_sensor-&gt;mode_set              = ri_lis2dh12_mode_set;</a>
+<a name="ln314">            p_sensor-&gt;mode_get              = ri_lis2dh12_mode_get;</a>
+<a name="ln315">            p_sensor-&gt;data_get              = ri_lis2dh12_data_get;</a>
+<a name="ln316">            p_sensor-&gt;configuration_set     = rd_sensor_configuration_set;</a>
+<a name="ln317">            p_sensor-&gt;configuration_get     = rd_sensor_configuration_get;</a>
+<a name="ln318">            p_sensor-&gt;fifo_enable           = ri_lis2dh12_fifo_use;</a>
+<a name="ln319">            p_sensor-&gt;fifo_interrupt_enable = ri_lis2dh12_fifo_interrupt_use;</a>
+<a name="ln320">            p_sensor-&gt;fifo_read             = ri_lis2dh12_fifo_read;</a>
+<a name="ln321">            p_sensor-&gt;level_interrupt_set   = ri_lis2dh12_activity_interrupt_use;</a>
+<a name="ln322">            p_sensor-&gt;provides.datas.acceleration_x_g = 1;</a>
+<a name="ln323">            p_sensor-&gt;provides.datas.acceleration_y_g = 1;</a>
+<a name="ln324">            p_sensor-&gt;provides.datas.acceleration_z_g = 1;</a>
+<a name="ln325">            p_sensor-&gt;provides.datas.temperature_c = 1;</a>
+<a name="ln326">            dev.tsample = RD_UINT64_INVALID;</a>
+<a name="ln327">        }</a>
+<a name="ln328">        else</a>
+<a name="ln329">        {</a>
+<a name="ln330">            rd_sensor_uninitialize (p_sensor);</a>
+<a name="ln331">            memset (&amp;dev, 0, sizeof (dev));</a>
+<a name="ln332">        }</a>
+<a name="ln333">    }</a>
+<a name="ln334"> </a>
+<a name="ln335">    LOGD (&quot;end. Error = %08x\r\n&quot;, err_code);</a>
+<a name="ln336">    return err_code;</a>
+<a name="ln337">}</a>
+<a name="ln338"> </a>
+<a name="ln339">/*</a>
+<a name="ln340"> * Lis2dh12 does not have a proper softreset (boot does not reset all registers)</a>
+<a name="ln341"> * Therefore just stop sampling</a>
+<a name="ln342"> */</a>
+<a name="ln343">rd_status_t ri_lis2dh12_uninit (rd_sensor_t * p_sensor,</a>
+<a name="ln344">                                rd_bus_t bus, uint8_t handle)</a>
+<a name="ln345">{</a>
+<a name="ln346">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln347"> </a>
+<a name="ln348">    if (NULL == p_sensor)</a>
+<a name="ln349">    {</a>
+<a name="ln350">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln351">    }</a>
+<a name="ln352">    else</a>
+<a name="ln353">    {</a>
+<a name="ln354">        rd_sensor_uninitialize (p_sensor);</a>
+<a name="ln355">        dev.samplerate = LIS2DH12_POWER_DOWN;</a>
+<a name="ln356">        //LIS2DH12 function returns SPI write result which is rd_status_t</a>
+<a name="ln357">        int32_t lis_ret_code = lis2dh12_data_rate_set (&amp; (dev.ctx), dev.samplerate);</a>
+<a name="ln358">        memset (&amp;dev, 0, sizeof (dev));</a>
+<a name="ln359"> </a>
+<a name="ln360">        if (LIS_SUCCESS != lis_ret_code)</a>
+<a name="ln361">        {</a>
+<a name="ln362">            err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln363">        }</a>
+<a name="ln364">    }</a>
+<a name="ln365"> </a>
+<a name="ln366">    return err_code;</a>
+<a name="ln367">}</a>
+<a name="ln368"> </a>
+<a name="ln369">/**</a>
+<a name="ln370"> * Set up samplerate. Powers down sensor on SAMPLERATE_STOP, writes value to</a>
+<a name="ln371"> * lis2dh12 only if mode is continous as writing samplerate to sensor starts sampling.</a>
+<a name="ln372"> * MAX is 200 Hz as it can be represented by the configuration format</a>
+<a name="ln373"> * Samplerate is rounded up, i.e. &quot;Please give me at least samplerate F.&quot;, 5 is rounded to 10 Hz etc.</a>
+<a name="ln374"> */</a>
+<a name="ln375">rd_status_t ri_lis2dh12_samplerate_set (uint8_t * samplerate)</a>
+<a name="ln376">{</a>
+<a name="ln377">    if (NULL == samplerate) { return RD_ERROR_NULL; }</a>
+<a name="ln378"> </a>
+<a name="ln379">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln380">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln381">    int32_t lis_ret_code;</a>
+<a name="ln382"> </a>
+<a name="ln383">    if (RD_SENSOR_CFG_NO_CHANGE == *samplerate)     {}</a>
+<a name="ln384">    else if (RD_SENSOR_CFG_MIN == *samplerate)      { dev.samplerate = LIS2DH12_ODR_1Hz;   }</a>
+<a name="ln385">    else if (RD_SENSOR_CFG_MAX == *samplerate)      { dev.samplerate = LIS2DH12_ODR_5kHz376_LP_1kHz344_NM_HP; }</a>
+<a name="ln386">    else if (RD_SENSOR_CFG_DEFAULT == *samplerate)  { dev.samplerate = LIS2DH12_ODR_1Hz;   }</a>
+<a name="ln387">    else if (1   == *samplerate)                              { dev.samplerate = LIS2DH12_ODR_1Hz;   }</a>
+<a name="ln388">    else if (10  &gt;= *samplerate)                              { dev.samplerate = LIS2DH12_ODR_10Hz;  }</a>
+<a name="ln389">    else if (25  &gt;= *samplerate)                              { dev.samplerate = LIS2DH12_ODR_25Hz;  }</a>
+<a name="ln390">    else if (50  &gt;= *samplerate)                              { dev.samplerate = LIS2DH12_ODR_50Hz;  }</a>
+<a name="ln391">    else if (100 &gt;= *samplerate)                              { dev.samplerate = LIS2DH12_ODR_100Hz; }</a>
+<a name="ln392">    else if (200 &gt;= *samplerate)                              { dev.samplerate = LIS2DH12_ODR_200Hz; }</a>
+<a name="ln393">    else if (RD_SENSOR_CFG_CUSTOM_1 == *samplerate) { dev.samplerate = LIS2DH12_ODR_400Hz; }</a>
+<a name="ln394">    else if (RD_SENSOR_CFG_CUSTOM_2 == *samplerate) { dev.samplerate = LIS2DH12_ODR_1kHz620_LP; }</a>
+<a name="ln395">    // This is equal to LIS2DH12_ODR_5kHz376_LP</a>
+<a name="ln396">    else if (RD_SENSOR_CFG_CUSTOM_3 == *samplerate) { dev.samplerate = LIS2DH12_ODR_5kHz376_LP_1kHz344_NM_HP; }</a>
+<a name="ln397">    else { *samplerate = RD_SENSOR_ERR_NOT_SUPPORTED; err_code |= RD_ERROR_NOT_SUPPORTED; }</a>
+<a name="ln398"> </a>
+<a name="ln399">    if (RD_SUCCESS == err_code)</a>
+<a name="ln400">    {</a>
+<a name="ln401">        lis_ret_code = lis2dh12_data_rate_set (&amp; (dev.ctx), dev.samplerate);</a>
+<a name="ln402">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln403">        err_code |= ri_lis2dh12_samplerate_get (samplerate);</a>
+<a name="ln404">    }</a>
+<a name="ln405"> </a>
+<a name="ln406">    return err_code;</a>
+<a name="ln407">}</a>
+<a name="ln408"> </a>
+<a name="ln409">/*</a>
+<a name="ln410"> *. Read sample rate to pointer</a>
+<a name="ln411"> */</a>
+<a name="ln412">rd_status_t ri_lis2dh12_samplerate_get (uint8_t * samplerate)</a>
+<a name="ln413">{</a>
+<a name="ln414">    if (NULL == samplerate) { return RD_ERROR_NULL; }</a>
+<a name="ln415"> </a>
+<a name="ln416">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln417">    int32_t lis_ret_code;</a>
+<a name="ln418">    lis_ret_code = lis2dh12_data_rate_get (&amp; (dev.ctx), &amp;dev.samplerate);</a>
+<a name="ln419">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln420"> </a>
+<a name="ln421">    switch (dev.samplerate)</a>
+<a name="ln422">    {</a>
+<a name="ln423">        case LIS2DH12_ODR_1Hz:</a>
+<a name="ln424">            *samplerate = 1;</a>
+<a name="ln425">            break;</a>
+<a name="ln426"> </a>
+<a name="ln427">        case LIS2DH12_ODR_10Hz:</a>
+<a name="ln428">            *samplerate = 10;</a>
+<a name="ln429">            break;</a>
+<a name="ln430"> </a>
+<a name="ln431">        case LIS2DH12_ODR_25Hz:</a>
+<a name="ln432">            *samplerate = 25;</a>
+<a name="ln433">            break;</a>
+<a name="ln434"> </a>
+<a name="ln435">        case LIS2DH12_ODR_50Hz:</a>
+<a name="ln436">            *samplerate = 50;</a>
+<a name="ln437">            break;</a>
+<a name="ln438"> </a>
+<a name="ln439">        case LIS2DH12_ODR_100Hz:</a>
+<a name="ln440">            *samplerate = 100;</a>
+<a name="ln441">            break;</a>
+<a name="ln442"> </a>
+<a name="ln443">        case LIS2DH12_ODR_200Hz:</a>
+<a name="ln444">            *samplerate = 200;</a>
+<a name="ln445">            break;</a>
+<a name="ln446"> </a>
+<a name="ln447">        case LIS2DH12_ODR_400Hz:</a>
+<a name="ln448">            *samplerate = RD_SENSOR_CFG_CUSTOM_1;</a>
+<a name="ln449">            break;</a>
+<a name="ln450"> </a>
+<a name="ln451">        case LIS2DH12_ODR_5kHz376_LP_1kHz344_NM_HP:</a>
+<a name="ln452">            *samplerate = RD_SENSOR_CFG_MAX;</a>
+<a name="ln453">            break;</a>
+<a name="ln454"> </a>
+<a name="ln455">        case LIS2DH12_ODR_1kHz620_LP:</a>
+<a name="ln456">            *samplerate = RD_SENSOR_CFG_CUSTOM_2;</a>
+<a name="ln457">            break;</a>
+<a name="ln458"> </a>
+<a name="ln459">        default:</a>
+<a name="ln460">            *samplerate = RD_SENSOR_ERR_NOT_SUPPORTED;</a>
+<a name="ln461">            err_code |=  RD_ERROR_INTERNAL;</a>
+<a name="ln462">    }</a>
+<a name="ln463"> </a>
+<a name="ln464">    return err_code;</a>
+<a name="ln465">}</a>
+<a name="ln466"> </a>
+<a name="ln467">/**</a>
+<a name="ln468"> * Setup resolution. Resolution is rounded up, i.e. &quot;please give at least this many bits&quot;</a>
+<a name="ln469"> */</a>
+<a name="ln470">rd_status_t ri_lis2dh12_resolution_set (uint8_t * resolution)</a>
+<a name="ln471">{</a>
+<a name="ln472">    if (NULL == resolution)                               { return RD_ERROR_NULL; }</a>
+<a name="ln473"> </a>
+<a name="ln474">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln475">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln476">    int32_t lis_ret_code;</a>
+<a name="ln477"> </a>
+<a name="ln478">    if (RD_SENSOR_CFG_NO_CHANGE == *resolution)    { }</a>
+<a name="ln479">    else if (RD_SENSOR_CFG_MIN == *resolution)     { dev.resolution = LIS2DH12_LP_8bit;  }</a>
+<a name="ln480">    else if (RD_SENSOR_CFG_MAX == *resolution)     { dev.resolution = LIS2DH12_HR_12bit; }</a>
+<a name="ln481">    else if (RD_SENSOR_CFG_DEFAULT == *resolution) { dev.resolution = LIS2DH12_NM_10bit; }</a>
+<a name="ln482">    else if (8 &gt;= *resolution)                              { dev.resolution = LIS2DH12_LP_8bit;  }</a>
+<a name="ln483">    else if (10 &gt;= *resolution)                             { dev.resolution = LIS2DH12_NM_10bit; }</a>
+<a name="ln484">    else if (12 &gt;= *resolution)                             { dev.resolution = LIS2DH12_HR_12bit; }</a>
+<a name="ln485">    else { *resolution = RD_SENSOR_ERR_NOT_SUPPORTED; err_code |= RD_ERROR_NOT_SUPPORTED; }</a>
+<a name="ln486"> </a>
+<a name="ln487">    if (RD_SUCCESS == err_code)</a>
+<a name="ln488">    {</a>
+<a name="ln489">        lis_ret_code = lis2dh12_operating_mode_set (&amp; (dev.ctx), dev.resolution);</a>
+<a name="ln490">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln491">        err_code |= ri_lis2dh12_resolution_get (resolution);</a>
+<a name="ln492">    }</a>
+<a name="ln493"> </a>
+<a name="ln494">    return err_code;</a>
+<a name="ln495">}</a>
+<a name="ln496"> </a>
+<a name="ln497">rd_status_t ri_lis2dh12_resolution_get (uint8_t * resolution)</a>
+<a name="ln498">{</a>
+<a name="ln499">    if (NULL == resolution) { return RD_ERROR_NULL; }</a>
+<a name="ln500"> </a>
+<a name="ln501">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln502">    int32_t lis_ret_code;</a>
+<a name="ln503">    lis_ret_code = lis2dh12_operating_mode_get (&amp; (dev.ctx), &amp;dev.resolution);</a>
+<a name="ln504">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln505"> </a>
+<a name="ln506">    switch (dev.resolution)</a>
+<a name="ln507">    {</a>
+<a name="ln508">        case LIS2DH12_LP_8bit:</a>
+<a name="ln509">            *resolution = 8;</a>
+<a name="ln510">            break;</a>
+<a name="ln511"> </a>
+<a name="ln512">        case LIS2DH12_NM_10bit:</a>
+<a name="ln513">            *resolution = 10;</a>
+<a name="ln514">            break;</a>
+<a name="ln515"> </a>
+<a name="ln516">        case LIS2DH12_HR_12bit:</a>
+<a name="ln517">            *resolution = 12;</a>
+<a name="ln518">            break;</a>
+<a name="ln519"> </a>
+<a name="ln520">        default:</a>
+<a name="ln521">            *resolution = RD_SENSOR_ERR_INVALID;</a>
+<a name="ln522">            err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln523">            break;</a>
+<a name="ln524">    }</a>
+<a name="ln525"> </a>
+<a name="ln526">    return err_code;</a>
+<a name="ln527">}</a>
+<a name="ln528"> </a>
+<a name="ln529">/**</a>
+<a name="ln530"> * Setup lis2dh12 scale. Scale is rounded up, i.e. &quot;at least this much&quot;</a>
+<a name="ln531"> */</a>
+<a name="ln532">rd_status_t ri_lis2dh12_scale_set (uint8_t * scale)</a>
+<a name="ln533">{</a>
+<a name="ln534">    if (NULL == scale)                               { return RD_ERROR_NULL; }</a>
+<a name="ln535"> </a>
+<a name="ln536">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln537">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln538">    int32_t lis_ret_code;</a>
+<a name="ln539"> </a>
+<a name="ln540">    if (RD_SENSOR_CFG_NO_CHANGE == *scale)    { }</a>
+<a name="ln541">    else if (RD_SENSOR_CFG_MIN == *scale)     { dev.scale = LIS2DH12_2g; }</a>
+<a name="ln542">    else if (RD_SENSOR_CFG_MAX == *scale)     { dev.scale = LIS2DH12_16g; }</a>
+<a name="ln543">    else if (RD_SENSOR_CFG_DEFAULT == *scale) { dev.scale = LIS2DH12_2g;  }</a>
+<a name="ln544">    else if (2  &gt;= *scale)                              { dev.scale = LIS2DH12_2g;  }</a>
+<a name="ln545">    else if (4  &gt;= *scale)                              { dev.scale = LIS2DH12_4g;  }</a>
+<a name="ln546">    else if (8  &gt;= *scale)                              { dev.scale = LIS2DH12_8g;  }</a>
+<a name="ln547">    else if (16 &gt;= *scale)                              { dev.scale = LIS2DH12_16g; }</a>
+<a name="ln548">    else</a>
+<a name="ln549">    {</a>
+<a name="ln550">        *scale = RD_SENSOR_ERR_NOT_SUPPORTED;</a>
+<a name="ln551">        err_code |= RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln552">    }</a>
+<a name="ln553"> </a>
+<a name="ln554">    if (RD_SUCCESS == err_code)</a>
+<a name="ln555">    {</a>
+<a name="ln556">        lis_ret_code = lis2dh12_full_scale_set (&amp; (dev.ctx), dev.scale);</a>
+<a name="ln557">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln558">        err_code |= ri_lis2dh12_scale_get (scale);</a>
+<a name="ln559">    }</a>
+<a name="ln560"> </a>
+<a name="ln561">    return err_code;</a>
+<a name="ln562">}</a>
+<a name="ln563"> </a>
+<a name="ln564">rd_status_t ri_lis2dh12_scale_get (uint8_t * scale)</a>
+<a name="ln565">{</a>
+<a name="ln566">    if (NULL == scale) { return RD_ERROR_NULL; }</a>
+<a name="ln567"> </a>
+<a name="ln568">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln569">    int32_t lis_ret_code;</a>
+<a name="ln570">    lis_ret_code = lis2dh12_full_scale_get (&amp; (dev.ctx), &amp;dev.scale);</a>
+<a name="ln571">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln572"> </a>
+<a name="ln573">    switch (dev.scale)</a>
+<a name="ln574">    {</a>
+<a name="ln575">        case LIS2DH12_2g:</a>
+<a name="ln576">            *scale = 2;</a>
+<a name="ln577">            break;</a>
+<a name="ln578"> </a>
+<a name="ln579">        case LIS2DH12_4g:</a>
+<a name="ln580">            *scale = 4;</a>
+<a name="ln581">            break;</a>
+<a name="ln582"> </a>
+<a name="ln583">        case LIS2DH12_8g:</a>
+<a name="ln584">            *scale = 8;</a>
+<a name="ln585">            break;</a>
+<a name="ln586"> </a>
+<a name="ln587">        case  LIS2DH12_16g:</a>
+<a name="ln588">            *scale = 16;</a>
+<a name="ln589">            break;</a>
+<a name="ln590"> </a>
+<a name="ln591">        default:</a>
+<a name="ln592">            *scale = RD_SENSOR_ERR_NOT_SUPPORTED;</a>
+<a name="ln593">            err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln594">    }</a>
+<a name="ln595"> </a>
+<a name="ln596">    return err_code;</a>
+<a name="ln597">}</a>
+<a name="ln598"> </a>
+<a name="ln599">/*</a>
+<a name="ln600"> http://www.st.com/content/ccc/resource/technical/document/application_note/60/52/bd/69/28/f4/48/2b/DM00165265.pdf/files/DM00165265.pdf/jcr:content/translations/en.DM00165265.pdf</a>
+<a name="ln601"> CTRL2 DCF [1:0] HP cutoff frequency [Hz]</a>
+<a name="ln602"> 00 ODR/50</a>
+<a name="ln603"> 01 ODR/100</a>
+<a name="ln604"> 10 ODR/9</a>
+<a name="ln605"> 11 ODR/400</a>
+<a name="ln606">*/</a>
+<a name="ln607">rd_status_t ri_lis2dh12_dsp_set (uint8_t * dsp, uint8_t * parameter)</a>
+<a name="ln608">{</a>
+<a name="ln609">    if (NULL == dsp || NULL == parameter) { return RD_ERROR_NULL; }</a>
+<a name="ln610"> </a>
+<a name="ln611">    VERIFY_SENSOR_SLEEPS();</a>
+<a name="ln612">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln613">    int32_t lis_ret_code;</a>
+<a name="ln614">    // Read original values in case one is NO_CHANGE and other should be adjusted.</a>
+<a name="ln615">    uint8_t orig_dsp, orig_param;</a>
+<a name="ln616">    err_code |= ri_lis2dh12_dsp_get (&amp;orig_dsp, &amp;orig_param);</a>
+<a name="ln617"> </a>
+<a name="ln618">    if (RD_SENSOR_CFG_NO_CHANGE == *dsp)       { *dsp       = orig_dsp; }</a>
+<a name="ln619"> </a>
+<a name="ln620">    if (RD_SENSOR_CFG_NO_CHANGE == *parameter) { *parameter = orig_param; }</a>
+<a name="ln621"> </a>
+<a name="ln622">    if (RD_SENSOR_DSP_HIGH_PASS == *dsp)</a>
+<a name="ln623">    {</a>
+<a name="ln624">        lis2dh12_hpcf_t hpcf;</a>
+<a name="ln625"> </a>
+<a name="ln626">        // Set default here to avoid duplicate value error in switch-case</a>
+<a name="ln627">        if (RD_SENSOR_CFG_DEFAULT == *parameter) { *parameter = 0; }</a>
+<a name="ln628"> </a>
+<a name="ln629">        switch (*parameter)</a>
+<a name="ln630">        {</a>
+<a name="ln631">            case RD_SENSOR_CFG_MIN:</a>
+<a name="ln632">            case 0:</a>
+<a name="ln633">                hpcf = LIS2DH12_LIGHT;</a>
+<a name="ln634">                *parameter = 0;</a>
+<a name="ln635">                break;</a>
+<a name="ln636"> </a>
+<a name="ln637">            case 1:</a>
+<a name="ln638">                hpcf = LIS2DH12_MEDIUM;</a>
+<a name="ln639">                break;</a>
+<a name="ln640"> </a>
+<a name="ln641">            case 2:</a>
+<a name="ln642">                hpcf = LIS2DH12_STRONG;</a>
+<a name="ln643">                break;</a>
+<a name="ln644"> </a>
+<a name="ln645">            case RD_SENSOR_CFG_MAX:</a>
+<a name="ln646">            case 3:</a>
+<a name="ln647">                hpcf = LIS2DH12_AGGRESSIVE;</a>
+<a name="ln648">                *parameter = 3;</a>
+<a name="ln649">                break;</a>
+<a name="ln650"> </a>
+<a name="ln651">            default :</a>
+<a name="ln652">                *parameter = RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln653">                return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln654">        }</a>
+<a name="ln655"> </a>
+<a name="ln656">        lis_ret_code = lis2dh12_high_pass_bandwidth_set (&amp; (dev.ctx), hpcf);</a>
+<a name="ln657">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln658">        lis_ret_code = lis2dh12_high_pass_mode_set (&amp; (dev.ctx), LIS2DH12_NORMAL);</a>
+<a name="ln659">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln660">        lis_ret_code = lis2dh12_high_pass_on_outputs_set (&amp; (dev.ctx), PROPERTY_ENABLE);</a>
+<a name="ln661">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln662">        return err_code;</a>
+<a name="ln663">    }</a>
+<a name="ln664"> </a>
+<a name="ln665">    // Has no effect, but kept for future-proofness.</a>
+<a name="ln666">    if (RD_SENSOR_CFG_DEFAULT == *dsp)</a>
+<a name="ln667">    {</a>
+<a name="ln668">        *dsp = RD_SENSOR_DSP_LAST;</a>
+<a name="ln669">    }</a>
+<a name="ln670"> </a>
+<a name="ln671">    if (RD_SENSOR_DSP_LAST == *dsp)</a>
+<a name="ln672">    {</a>
+<a name="ln673">        lis_ret_code = lis2dh12_high_pass_on_outputs_set (&amp; (dev.ctx), PROPERTY_DISABLE);</a>
+<a name="ln674">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln675">        *dsp = RD_SENSOR_DSP_LAST;</a>
+<a name="ln676">        return err_code;</a>
+<a name="ln677">    }</a>
+<a name="ln678"> </a>
+<a name="ln679">    return RD_ERROR_NOT_SUPPORTED;</a>
+<a name="ln680">}</a>
+<a name="ln681"> </a>
+<a name="ln682">rd_status_t ri_lis2dh12_dsp_get (uint8_t * dsp, uint8_t * parameter)</a>
+<a name="ln683">{</a>
+<a name="ln684">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln685">    int32_t lis_ret_code;</a>
+<a name="ln686">    uint8_t mode;</a>
+<a name="ln687">    lis2dh12_hpcf_t hpcf;</a>
+<a name="ln688">    lis_ret_code = lis2dh12_high_pass_bandwidth_get (&amp; (dev.ctx), &amp;hpcf);</a>
+<a name="ln689">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln690">    lis_ret_code = lis2dh12_high_pass_on_outputs_get (&amp; (dev.ctx), &amp;mode);</a>
+<a name="ln691">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln692"> </a>
+<a name="ln693">    if (mode) { *dsp = RD_SENSOR_DSP_HIGH_PASS; }</a>
+<a name="ln694">    else { *dsp = RD_SENSOR_DSP_LAST; }</a>
+<a name="ln695"> </a>
+<a name="ln696">    switch (hpcf)</a>
+<a name="ln697">    {</a>
+<a name="ln698">        case LIS2DH12_LIGHT:</a>
+<a name="ln699">            *parameter = 0;</a>
+<a name="ln700">            break;</a>
+<a name="ln701"> </a>
+<a name="ln702">        case LIS2DH12_MEDIUM:</a>
+<a name="ln703">            *parameter = 1;</a>
+<a name="ln704">            break;</a>
+<a name="ln705"> </a>
+<a name="ln706">        case LIS2DH12_STRONG:</a>
+<a name="ln707">            *parameter = 2;</a>
+<a name="ln708">            break;</a>
+<a name="ln709"> </a>
+<a name="ln710">        case LIS2DH12_AGGRESSIVE:</a>
+<a name="ln711">            *parameter = 3;</a>
+<a name="ln712">            break;</a>
+<a name="ln713"> </a>
+<a name="ln714">        default:</a>
+<a name="ln715">            *parameter  = RD_SENSOR_ERR_NOT_SUPPORTED;</a>
+<a name="ln716">            return RD_ERROR_INTERNAL;</a>
+<a name="ln717">    }</a>
+<a name="ln718"> </a>
+<a name="ln719">    return err_code;</a>
+<a name="ln720">}</a>
+<a name="ln721"> </a>
+<a name="ln722">rd_status_t ri_lis2dh12_mode_set (uint8_t * mode)</a>
+<a name="ln723">{</a>
+<a name="ln724">    if (NULL == mode) { return RD_ERROR_NULL; }</a>
+<a name="ln725"> </a>
+<a name="ln726">    int32_t lis_ret_code;</a>
+<a name="ln727">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln728"> </a>
+<a name="ln729">    if (RD_SENSOR_CFG_SINGLE == *mode)</a>
+<a name="ln730">    {</a>
+<a name="ln731">        // Do nothing if sensor is in continuous mode</a>
+<a name="ln732">        uint8_t current_mode;</a>
+<a name="ln733">        ri_lis2dh12_mode_get (&amp;current_mode);</a>
+<a name="ln734"> </a>
+<a name="ln735">        if (RD_SENSOR_CFG_CONTINUOUS == current_mode)</a>
+<a name="ln736">        {</a>
+<a name="ln737">            *mode = RD_SENSOR_CFG_CONTINUOUS;</a>
+<a name="ln738">            return RD_ERROR_INVALID_STATE;</a>
+<a name="ln739">        }</a>
+<a name="ln740"> </a>
+<a name="ln741">        // Start sensor at 400 Hz (highest common samplerate)</a>
+<a name="ln742">        // and wait for 7/ODR ms for turn-on (?) NOTE: 7 s / 400 just to be on safe side.</a>
+<a name="ln743">        // Refer to LIS2DH12 datasheet p.16.</a>
+<a name="ln744">        dev.samplerate = LIS2DH12_ODR_400Hz;</a>
+<a name="ln745">        lis_ret_code = lis2dh12_data_rate_set (&amp; (dev.ctx), dev.samplerate);</a>
+<a name="ln746">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln747">        ri_delay_ms ( (7000 / 400) + 1);</a>
+<a name="ln748">        dev.tsample = rd_sensor_timestamp_get();</a>
+<a name="ln749">        dev.samplerate = LIS2DH12_POWER_DOWN;</a>
+<a name="ln750">        lis_ret_code = lis2dh12_data_rate_set (&amp; (dev.ctx), dev.samplerate);</a>
+<a name="ln751">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln752">        *mode = RD_SENSOR_CFG_SLEEP;</a>
+<a name="ln753">        return err_code;</a>
+<a name="ln754">    }</a>
+<a name="ln755"> </a>
+<a name="ln756">    // Do not store power down mode to dev structure, so we can continue at previous data rate</a>
+<a name="ln757">    // when mode is set to continous.</a>
+<a name="ln758">    if (RD_SENSOR_CFG_SLEEP == *mode)</a>
+<a name="ln759">    {</a>
+<a name="ln760">        dev.mode = *mode;</a>
+<a name="ln761">        lis_ret_code = lis2dh12_data_rate_set (&amp; (dev.ctx), LIS2DH12_POWER_DOWN);</a>
+<a name="ln762">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln763">    }</a>
+<a name="ln764">    else if (RD_SENSOR_CFG_CONTINUOUS == *mode)</a>
+<a name="ln765">    {</a>
+<a name="ln766">        dev.mode = *mode;</a>
+<a name="ln767">        lis_ret_code = lis2dh12_data_rate_set (&amp; (dev.ctx), dev.samplerate);</a>
+<a name="ln768">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln769">    }</a>
+<a name="ln770">    else { err_code |= RD_ERROR_INVALID_PARAM; }</a>
+<a name="ln771"> </a>
+<a name="ln772">    return err_code;</a>
+<a name="ln773">}</a>
+<a name="ln774"> </a>
+<a name="ln775">rd_status_t ri_lis2dh12_mode_get (uint8_t * mode)</a>
+<a name="ln776">{</a>
+<a name="ln777">    if (NULL == mode) { return RD_ERROR_NULL; }</a>
+<a name="ln778"> </a>
+<a name="ln779">    switch (dev.mode)</a>
+<a name="ln780">    {</a>
+<a name="ln781">        case RD_SENSOR_CFG_SLEEP:</a>
+<a name="ln782">            *mode = RD_SENSOR_CFG_SLEEP;</a>
+<a name="ln783">            break;</a>
+<a name="ln784"> </a>
+<a name="ln785">        case RD_SENSOR_CFG_CONTINUOUS:</a>
+<a name="ln786">            *mode = RD_SENSOR_CFG_CONTINUOUS;</a>
+<a name="ln787">            break;</a>
+<a name="ln788"> </a>
+<a name="ln789">        default:</a>
+<a name="ln790">            *mode = RD_SENSOR_ERR_NOT_SUPPORTED;</a>
+<a name="ln791">            return RD_ERROR_INTERNAL;</a>
+<a name="ln792">    }</a>
+<a name="ln793"> </a>
+<a name="ln794">    return RD_SUCCESS;</a>
+<a name="ln795">}</a>
+<a name="ln796"> </a>
+<a name="ln797">/**</a>
+<a name="ln798"> * Convert raw value to temperature in celcius</a>
+<a name="ln799"> *</a>
+<a name="ln800"> * parameter raw: Input. Raw values from LIS2DH12-</a>
+<a name="ln801"> * parameter acceleration: Output. Temperature values in C.</a>
+<a name="ln802"> *</a>
+<a name="ln803"> */</a>
+<a name="ln804">static rd_status_t rawToC (const uint8_t * const raw_temperature,</a>
+<a name="ln805">                           float * temperature)</a>
+<a name="ln806">{</a>
+<a name="ln807">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln808">    int16_t value = (raw_temperature[1] * 256) + raw_temperature[0];</a>
+<a name="ln809"> </a>
+<a name="ln810">    switch (dev.resolution)</a>
+<a name="ln811">    {</a>
+<a name="ln812">        case LIS2DH12_LP_8bit:</a>
+<a name="ln813">            *temperature = lis2dh12_from_lsb_lp_to_celsius (value);</a>
+<a name="ln814">            break;</a>
+<a name="ln815"> </a>
+<a name="ln816">        case LIS2DH12_NM_10bit:</a>
+<a name="ln817">            *temperature = lis2dh12_from_lsb_nm_to_celsius (value);</a>
+<a name="ln818">            break;</a>
+<a name="ln819"> </a>
+<a name="ln820">        case LIS2DH12_HR_12bit:</a>
+<a name="ln821">            *temperature = lis2dh12_from_lsb_hr_to_celsius (value);</a>
+<a name="ln822">            break;</a>
+<a name="ln823"> </a>
+<a name="ln824">        default:</a>
+<a name="ln825">            *temperature = RD_FLOAT_INVALID;</a>
+<a name="ln826">            err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln827">            break;</a>
+<a name="ln828">    }</a>
+<a name="ln829"> </a>
+<a name="ln830">    return err_code;</a>
+<a name="ln831">}</a>
+<a name="ln832"> </a>
+<a name="ln833">/**</a>
+<a name="ln834"> * Convert raw value to acceleration in mg</a>
+<a name="ln835"> *</a>
+<a name="ln836"> * parameter raw: Input. Raw values from LIS2DH12</a>
+<a name="ln837"> * parameter acceleration: Output. Acceleration values in mg</a>
+<a name="ln838"> *</a>
+<a name="ln839"> */</a>
+<a name="ln840">static rd_status_t rawToMg (const axis3bit16_t * raw_acceleration,</a>
+<a name="ln841">                            float * acceleration)</a>
+<a name="ln842">{</a>
+<a name="ln843">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln844"> </a>
+<a name="ln845">    for (size_t ii = 0; ii &lt; 3; ii++)</a>
+<a name="ln846">    {</a>
+<a name="ln847">        switch (dev.scale)</a>
+<a name="ln848">        {</a>
+<a name="ln849">            case LIS2DH12_2g:</a>
+<a name="ln850">                switch (dev.resolution)</a>
+<a name="ln851">                {</a>
+<a name="ln852">                    case LIS2DH12_LP_8bit:</a>
+<a name="ln853">                        acceleration[ii] = lis2dh12_from_fs2_lp_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln854">                        break;</a>
+<a name="ln855"> </a>
+<a name="ln856">                    case LIS2DH12_NM_10bit:</a>
+<a name="ln857">                        acceleration[ii] = lis2dh12_from_fs2_nm_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln858">                        break;</a>
+<a name="ln859"> </a>
+<a name="ln860">                    case LIS2DH12_HR_12bit:</a>
+<a name="ln861">                        acceleration[ii] = lis2dh12_from_fs2_hr_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln862">                        break;</a>
+<a name="ln863"> </a>
+<a name="ln864">                    default:</a>
+<a name="ln865">                        acceleration[ii] = RD_FLOAT_INVALID;</a>
+<a name="ln866">                        err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln867">                        break;</a>
+<a name="ln868">                }</a>
+<a name="ln869"> </a>
+<a name="ln870">                break;</a>
+<a name="ln871"> </a>
+<a name="ln872">            case LIS2DH12_4g:</a>
+<a name="ln873">                switch (dev.resolution)</a>
+<a name="ln874">                {</a>
+<a name="ln875">                    case LIS2DH12_LP_8bit:</a>
+<a name="ln876">                        acceleration[ii] = lis2dh12_from_fs4_lp_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln877">                        break;</a>
+<a name="ln878"> </a>
+<a name="ln879">                    case LIS2DH12_NM_10bit:</a>
+<a name="ln880">                        acceleration[ii] = lis2dh12_from_fs4_nm_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln881">                        break;</a>
+<a name="ln882"> </a>
+<a name="ln883">                    case LIS2DH12_HR_12bit:</a>
+<a name="ln884">                        acceleration[ii] = lis2dh12_from_fs4_hr_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln885">                        break;</a>
+<a name="ln886"> </a>
+<a name="ln887">                    default:</a>
+<a name="ln888">                        acceleration[ii] = RD_FLOAT_INVALID;</a>
+<a name="ln889">                        err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln890">                        break;</a>
+<a name="ln891">                }</a>
+<a name="ln892"> </a>
+<a name="ln893">                break;</a>
+<a name="ln894"> </a>
+<a name="ln895">            case LIS2DH12_8g:</a>
+<a name="ln896">                switch (dev.resolution)</a>
+<a name="ln897">                {</a>
+<a name="ln898">                    case LIS2DH12_LP_8bit:</a>
+<a name="ln899">                        acceleration[ii] = lis2dh12_from_fs8_lp_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln900">                        break;</a>
+<a name="ln901"> </a>
+<a name="ln902">                    case LIS2DH12_NM_10bit:</a>
+<a name="ln903">                        acceleration[ii] = lis2dh12_from_fs8_nm_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln904">                        break;</a>
+<a name="ln905"> </a>
+<a name="ln906">                    case LIS2DH12_HR_12bit:</a>
+<a name="ln907">                        acceleration[ii] = lis2dh12_from_fs8_hr_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln908">                        break;</a>
+<a name="ln909"> </a>
+<a name="ln910">                    default:</a>
+<a name="ln911">                        acceleration[ii] = RD_FLOAT_INVALID;</a>
+<a name="ln912">                        err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln913">                        break;</a>
+<a name="ln914">                }</a>
+<a name="ln915"> </a>
+<a name="ln916">                break;</a>
+<a name="ln917"> </a>
+<a name="ln918">            case LIS2DH12_16g:</a>
+<a name="ln919">                switch (dev.resolution)</a>
+<a name="ln920">                {</a>
+<a name="ln921">                    case LIS2DH12_LP_8bit:</a>
+<a name="ln922">                        acceleration[ii] = lis2dh12_from_fs16_lp_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln923">                        break;</a>
+<a name="ln924"> </a>
+<a name="ln925">                    case LIS2DH12_NM_10bit:</a>
+<a name="ln926">                        acceleration[ii] = lis2dh12_from_fs16_nm_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln927">                        break;</a>
+<a name="ln928"> </a>
+<a name="ln929">                    case LIS2DH12_HR_12bit:</a>
+<a name="ln930">                        acceleration[ii] = lis2dh12_from_fs16_hr_to_mg (raw_acceleration-&gt;i16bit[ii]);</a>
+<a name="ln931">                        break;</a>
+<a name="ln932"> </a>
+<a name="ln933">                    default:</a>
+<a name="ln934">                        acceleration[ii] = RD_FLOAT_INVALID;</a>
+<a name="ln935">                        err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln936">                        break;</a>
+<a name="ln937">                }</a>
+<a name="ln938"> </a>
+<a name="ln939">                break;</a>
+<a name="ln940"> </a>
+<a name="ln941">            default:</a>
+<a name="ln942">                acceleration[ii] = RD_FLOAT_INVALID;</a>
+<a name="ln943">                err_code |= RD_ERROR_INTERNAL;</a>
+<a name="ln944">                break;</a>
+<a name="ln945">        }</a>
+<a name="ln946">    }</a>
+<a name="ln947"> </a>
+<a name="ln948">    return err_code;</a>
+<a name="ln949">}</a>
+<a name="ln950"> </a>
+<a name="ln951">rd_status_t ri_lis2dh12_data_get (rd_sensor_data_t * const</a>
+<a name="ln952">                                  data)</a>
+<a name="ln953">{</a>
+<a name="ln954">    if (NULL == data) { return RD_ERROR_NULL; }</a>
+<a name="ln955"> </a>
+<a name="ln956">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln957">    int32_t lis_ret_code;</a>
+<a name="ln958">    axis3bit16_t raw_acceleration;</a>
+<a name="ln959">    uint8_t raw_temperature[2];</a>
+<a name="ln960">    memset (raw_acceleration.u8bit, 0x00, 3 * sizeof (int16_t));</a>
+<a name="ln961">    lis_ret_code = lis2dh12_acceleration_raw_get (&amp; (dev.ctx), raw_acceleration.u8bit);</a>
+<a name="ln962">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln963">    lis_ret_code = lis2dh12_temperature_raw_get (&amp; (dev.ctx), raw_temperature);</a>
+<a name="ln964">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln965">    // Compensate data with resolution, scale</a>
+<a name="ln966">    float acceleration[3];</a>
+<a name="ln967">    float temperature;</a>
+<a name="ln968">    err_code |= rawToMg (&amp;raw_acceleration, acceleration);</a>
+<a name="ln969">    err_code |= rawToC (raw_temperature, &amp;temperature);</a>
+<a name="ln970">    uint8_t mode;</a>
+<a name="ln971">    err_code |= ri_lis2dh12_mode_get (&amp;mode);</a>
+<a name="ln972"> </a>
+<a name="ln973">    if (RD_SENSOR_CFG_SLEEP == mode)           {  data-&gt;timestamp_ms   = dev.tsample; }</a>
+<a name="ln974">    else if (RD_SENSOR_CFG_CONTINUOUS == mode)</a>
+<a name="ln975">    {</a>
+<a name="ln976">        data-&gt;timestamp_ms = rd_sensor_timestamp_get();</a>
+<a name="ln977">    }</a>
+<a name="ln978">    else { RD_ERROR_CHECK (RD_ERROR_INTERNAL, ~RD_ERROR_FATAL); }</a>
+<a name="ln979"> </a>
+<a name="ln980">    // If we have valid data, return it.</a>
+<a name="ln981">    if (RD_UINT64_INVALID != data-&gt;timestamp_ms</a>
+<a name="ln982">            &amp;&amp; RD_SUCCESS == err_code)</a>
+<a name="ln983">    {</a>
+<a name="ln984">        rd_sensor_data_t d_acceleration;</a>
+<a name="ln985">        float values[4];</a>
+<a name="ln986">        rd_sensor_data_fields_t acc_fields = {.bitfield = 0};</a>
+<a name="ln987">        d_acceleration.data = values;</a>
+<a name="ln988">        acc_fields.datas.acceleration_x_g = 1;</a>
+<a name="ln989">        acc_fields.datas.acceleration_y_g = 1;</a>
+<a name="ln990">        acc_fields.datas.acceleration_z_g = 1;</a>
+<a name="ln991">        acc_fields.datas.temperature_c = 1;</a>
+<a name="ln992">        //Convert mG to G.</a>
+<a name="ln993">        values[0] = acceleration[0] / 1000.0;</a>
+<a name="ln994">        values[1] = acceleration[1] / 1000.0;</a>
+<a name="ln995">        values[2] = acceleration[2] / 1000.0;</a>
+<a name="ln996">        values[3] = temperature;</a>
+<a name="ln997">        d_acceleration.valid  = acc_fields;</a>
+<a name="ln998">        d_acceleration.fields = acc_fields;</a>
+<a name="ln999">        rd_sensor_data_populate (data,</a>
+<a name="ln1000">                                 &amp;d_acceleration,</a>
+<a name="ln1001">                                 data-&gt;fields);</a>
+<a name="ln1002">    }</a>
+<a name="ln1003"> </a>
+<a name="ln1004">    return err_code;</a>
+<a name="ln1005">}</a>
+<a name="ln1006"> </a>
+<a name="ln1007">// TODO: State checks</a>
+<a name="ln1008">rd_status_t ri_lis2dh12_fifo_use (const bool enable)</a>
+<a name="ln1009">{</a>
+<a name="ln1010">    lis2dh12_fm_t mode;</a>
+<a name="ln1011">    int32_t lis_ret_code;</a>
+<a name="ln1012">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln1013"> </a>
+<a name="ln1014">    if (enable) { mode = LIS2DH12_DYNAMIC_STREAM_MODE; }</a>
+<a name="ln1015">    else { mode = LIS2DH12_BYPASS_MODE; }</a>
+<a name="ln1016"> </a>
+<a name="ln1017">    lis_ret_code = lis2dh12_fifo_set (&amp; (dev.ctx), enable);</a>
+<a name="ln1018">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1019">    lis_ret_code = lis2dh12_fifo_mode_set (&amp; (dev.ctx),  mode);</a>
+<a name="ln1020">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1021">    return err_code;</a>
+<a name="ln1022">}</a>
+<a name="ln1023"> </a>
+<a name="ln1024">//TODO * return: RD_INVALID_STATE if FIFO is not in use</a>
+<a name="ln1025">rd_status_t ri_lis2dh12_fifo_read (size_t * num_elements,</a>
+<a name="ln1026">                                   rd_sensor_data_t * p_data)</a>
+<a name="ln1027">{</a>
+<a name="ln1028">    if (NULL == num_elements || NULL == p_data) { return RD_ERROR_NULL; }</a>
+<a name="ln1029"> </a>
+<a name="ln1030">    uint8_t elements = 0;</a>
+<a name="ln1031">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln1032">    int32_t lis_ret_code;</a>
+<a name="ln1033">    lis_ret_code = lis2dh12_fifo_data_level_get (&amp; (dev.ctx), &amp;elements);</a>
+<a name="ln1034">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1035"> </a>
+<a name="ln1036">    if (!elements)</a>
+<a name="ln1037">    {</a>
+<a name="ln1038">        *num_elements = 0;</a>
+<a name="ln1039">        return RD_SUCCESS;</a>
+<a name="ln1040">    }</a>
+<a name="ln1041"> </a>
+<a name="ln1042">    // 31 FIFO + latest</a>
+<a name="ln1043">    elements++;</a>
+<a name="ln1044"> </a>
+<a name="ln1045">    // Do not read more than buffer size</a>
+<a name="ln1046">    if (elements &gt; *num_elements) { elements = *num_elements; }</a>
+<a name="ln1047"> </a>
+<a name="ln1048">    // get current time</a>
+<a name="ln1049">    p_data-&gt;timestamp_ms = rd_sensor_timestamp_get();</a>
+<a name="ln1050">    // Read all elements</a>
+<a name="ln1051">    axis3bit16_t raw_acceleration;</a>
+<a name="ln1052">    float acceleration[3];</a>
+<a name="ln1053"> </a>
+<a name="ln1054">    for (size_t ii = 0; ii &lt; elements; ii++)</a>
+<a name="ln1055">    {</a>
+<a name="ln1056">        lis_ret_code = lis2dh12_acceleration_raw_get (&amp; (dev.ctx), raw_acceleration.u8bit);</a>
+<a name="ln1057">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1058">        // Compensate data with resolution, scale</a>
+<a name="ln1059">        err_code |= rawToMg (&amp;raw_acceleration, acceleration);</a>
+<a name="ln1060">        rd_sensor_data_t d_acceleration;</a>
+<a name="ln1061">        rd_sensor_data_fields_t acc_fields = {.bitfield = 0};</a>
+<a name="ln1062">        acc_fields.datas.acceleration_x_g = 1;</a>
+<a name="ln1063">        acc_fields.datas.acceleration_y_g = 1;</a>
+<a name="ln1064">        acc_fields.datas.acceleration_z_g = 1;</a>
+<a name="ln1065">        //Convert mG to G</a>
+<a name="ln1066">        acceleration[0] = acceleration[0] / 1000.0;</a>
+<a name="ln1067">        acceleration[1] = acceleration[1] / 1000.0;</a>
+<a name="ln1068">        acceleration[2] = acceleration[2] / 1000.0;</a>
+<a name="ln1069">        d_acceleration.data = acceleration;</a>
+<a name="ln1070">        d_acceleration.valid  = acc_fields;</a>
+<a name="ln1071">        d_acceleration.fields = acc_fields;</a>
+<a name="ln1072">        rd_sensor_data_populate (&amp; (p_data[ii]),</a>
+<a name="ln1073">                                 &amp;d_acceleration,</a>
+<a name="ln1074">                                 p_data[ii].fields);</a>
+<a name="ln1075">    }</a>
+<a name="ln1076"> </a>
+<a name="ln1077">    *num_elements = elements;</a>
+<a name="ln1078">    return err_code;</a>
+<a name="ln1079">}</a>
+<a name="ln1080"> </a>
+<a name="ln1081"> </a>
+<a name="ln1082">rd_status_t ri_lis2dh12_fifo_interrupt_use (const bool enable)</a>
+<a name="ln1083">{</a>
+<a name="ln1084">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln1085">    int32_t lis_ret_code;</a>
+<a name="ln1086">    lis2dh12_ctrl_reg3_t ctrl = { 0 };</a>
+<a name="ln1087"> </a>
+<a name="ln1088">    if (true == enable)</a>
+<a name="ln1089">    {</a>
+<a name="ln1090">        // Setting the FTH [4:0] bit in the FIFO_CTRL_REG (2Eh) register to an N value,</a>
+<a name="ln1091">        // the number of X, Y and Z data samples that should be read at the rise of the watermark interrupt is up to (N+1).</a>
+<a name="ln1092">        lis_ret_code = lis2dh12_fifo_watermark_set (&amp; (dev.ctx), 31);</a>
+<a name="ln1093">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1094">        ctrl.i1_wtm = PROPERTY_ENABLE;</a>
+<a name="ln1095">    }</a>
+<a name="ln1096"> </a>
+<a name="ln1097">    lis_ret_code = lis2dh12_pin_int1_config_set (&amp; (dev.ctx), &amp;ctrl);</a>
+<a name="ln1098">    err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1099">    return err_code;</a>
+<a name="ln1100">}</a>
+<a name="ln1101"> </a>
+<a name="ln1102">/**</a>
+<a name="ln1103"> * Enable activity interrupt on LIS2DH12</a>
+<a name="ln1104"> * Triggers as ACTIVE HIGH interrupt while detected movement is above threshold limit_g</a>
+<a name="ln1105"> * Axes are high-passed for this interrupt, i.e. gravity won't trigger the interrupt</a>
+<a name="ln1106"> * Axes are examined individually, compound acceleration won't trigger the interrupt.</a>
+<a name="ln1107"> *</a>
+<a name="ln1108"> * parameter enable:  True to enable interrupt, false to disable interrupt</a>
+<a name="ln1109"> * parameter limit_g: Desired acceleration to trigger the interrupt.</a>
+<a name="ln1110"> *                    Is considered as &quot;at least&quot;, the acceleration is rounded up to next value.</a>
+<a name="ln1111"> *                    Is written with value that was set to interrupt</a>
+<a name="ln1112"> * returns: RD_SUCCESS on success</a>
+<a name="ln1113"> * returns: RD_ERROR_INVALID_STATE if acceleration limit is higher than maximum scale</a>
+<a name="ln1114"> * returns: error code from stack on error.</a>
+<a name="ln1115"> *</a>
+<a name="ln1116"> */</a>
+<a name="ln1117">rd_status_t ri_lis2dh12_activity_interrupt_use (const bool enable, float * const limit_g)</a>
+<a name="ln1118">{</a>
+<a name="ln1119">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln1120">    int32_t lis_ret_code;</a>
+<a name="ln1121">    lis2dh12_hp_t high_pass = LIS2DH12_ON_INT1_GEN;</a>
+<a name="ln1122">    lis2dh12_ctrl_reg6_t ctrl6 = { 0 };</a>
+<a name="ln1123">    lis2dh12_int1_cfg_t  cfg = { 0 };</a>
+<a name="ln1124"> </a>
+<a name="ln1125">    if (NULL == limit_g)</a>
+<a name="ln1126">    {</a>
+<a name="ln1127">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln1128">    }</a>
+<a name="ln1129">    else if ( (0 &gt; *limit_g) &amp;&amp; enable)</a>
+<a name="ln1130">    {</a>
+<a name="ln1131">        err_code |= RD_ERROR_INVALID_PARAM;</a>
+<a name="ln1132">    }</a>
+<a name="ln1133">    else if (enable)</a>
+<a name="ln1134">    {</a>
+<a name="ln1135">        cfg.xhie     = PROPERTY_ENABLE;</a>
+<a name="ln1136">        cfg.yhie     = PROPERTY_ENABLE;</a>
+<a name="ln1137">        cfg.zhie     = PROPERTY_ENABLE;</a>
+<a name="ln1138">        ctrl6.i2_ia1 = PROPERTY_ENABLE;</a>
+<a name="ln1139">        /*</a>
+<a name="ln1140">        Do not enable lower threshold on activity detection, as it would</a>
+<a name="ln1141">        turn logic into not-active detection.</a>
+<a name="ln1142">        cfg.xlie     = PROPERTY_ENABLE;</a>
+<a name="ln1143">        cfg.ylie     = PROPERTY_ENABLE;</a>
+<a name="ln1144">        cfg.zlie     = PROPERTY_ENABLE;</a>
+<a name="ln1145">        */</a>
+<a name="ln1146">        // Adjust for scale</a>
+<a name="ln1147">        // 1 LSb = 16 mg @ FS = 2 g</a>
+<a name="ln1148">        // 1 LSb = 32 mg @ FS = 4 g</a>
+<a name="ln1149">        // 1 LSb = 62 mg @ FS = 8 g</a>
+<a name="ln1150">        // 1 LSb = 186 mg @ FS = 16 g</a>
+<a name="ln1151">        uint8_t  scale;</a>
+<a name="ln1152">        uint32_t threshold;</a>
+<a name="ln1153">        float divisor;</a>
+<a name="ln1154">        lis_ret_code = ri_lis2dh12_scale_get (&amp;scale);</a>
+<a name="ln1155">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1156"> </a>
+<a name="ln1157">        switch (scale)</a>
+<a name="ln1158">        {</a>
+<a name="ln1159">            case 2:</a>
+<a name="ln1160">                divisor = 0.016f;</a>
+<a name="ln1161">                break;</a>
+<a name="ln1162"> </a>
+<a name="ln1163">            case 4:</a>
+<a name="ln1164">                divisor = 0.032f;</a>
+<a name="ln1165">                break;</a>
+<a name="ln1166"> </a>
+<a name="ln1167">            case 8:</a>
+<a name="ln1168">                divisor = 0.062f;</a>
+<a name="ln1169">                break;</a>
+<a name="ln1170"> </a>
+<a name="ln1171">            case 16:</a>
+<a name="ln1172">                divisor = 0.186f;</a>
+<a name="ln1173">                break;</a>
+<a name="ln1174"> </a>
+<a name="ln1175">            default:</a>
+<a name="ln1176">                divisor = 0.016f;</a>
+<a name="ln1177">                break;</a>
+<a name="ln1178">        }</a>
+<a name="ln1179"> </a>
+<a name="ln1180">        threshold = (uint32_t) (*limit_g / divisor) + 1;</a>
+<a name="ln1181"> </a>
+<a name="ln1182">        if (threshold &gt; MOTION_THRESHOLD_MAX)</a>
+<a name="ln1183">        {</a>
+<a name="ln1184">            err_code |= RD_ERROR_INVALID_PARAM;</a>
+<a name="ln1185">        }</a>
+<a name="ln1186">        else</a>
+<a name="ln1187">        {</a>
+<a name="ln1188">            *limit_g = ( (float) threshold) * divisor;</a>
+<a name="ln1189">            // Configure INTERRUPT 1 Threshold</a>
+<a name="ln1190">            lis_ret_code = lis2dh12_int1_gen_threshold_set (&amp; (dev.ctx), threshold);</a>
+<a name="ln1191">            err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1192">        }</a>
+<a name="ln1193">    }</a>
+<a name="ln1194">    else</a>
+<a name="ln1195">    {</a>
+<a name="ln1196">        high_pass = LIS2DH12_DISC_FROM_INT_GENERATOR;</a>
+<a name="ln1197">    }</a>
+<a name="ln1198"> </a>
+<a name="ln1199">    if (RD_SUCCESS == err_code)</a>
+<a name="ln1200">    {</a>
+<a name="ln1201">        // Configure highpass on INTERRUPT 1</a>
+<a name="ln1202">        lis_ret_code = lis2dh12_high_pass_int_conf_set (&amp; (dev.ctx), high_pass);</a>
+<a name="ln1203">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1204">        // Configure INTERRUPT 1.</a>
+<a name="ln1205">        lis_ret_code = lis2dh12_int1_gen_conf_set (&amp; (dev.ctx), &amp;cfg);</a>
+<a name="ln1206">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1207">        // Route INTERRUPT 1 to PIN 2.</a>
+<a name="ln1208">        lis_ret_code = lis2dh12_pin_int2_config_set (&amp; (dev.ctx), &amp;ctrl6);</a>
+<a name="ln1209">        err_code |= (LIS_SUCCESS == lis_ret_code) ? RD_SUCCESS : RD_ERROR_INTERNAL;</a>
+<a name="ln1210">    }</a>
+<a name="ln1211"> </a>
+<a name="ln1212">    return err_code;</a>
+<a name="ln1213">}</a>
+<a name="ln1214">/*@}*/</a>
+<a name="ln1215">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="65"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '*' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="62"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2514/" target="_blank">V2514</a> Unions should not be used.</p></div>
+<div class="balloon" rel="69"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2514/" target="_blank">V2514</a> Unions should not be used.</p></div>
+<div class="balloon" rel="97"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '<' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="125"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'new->i16bit[ii] - old->i16bit[ii]' expression should not be converted to the narrower essential 'signed' type.</p></div>
+<div class="balloon" rel="127"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(64U)' expression should not be converted from the essential 'unsigned' type to the essential 'signed' type.</p></div>
+<div class="balloon" rel="127"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '/=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="129"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '0 - diff' expression should not be converted to the narrower essential 'signed' type.</p></div>
+<div class="balloon" rel="171"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="199"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The left operand 'lis_ret_code' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="201"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The left operand 'lis_ret_code' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="203"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The left operand 'lis_ret_code' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="238"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Value of the expression should not be converted from the essential 'unsigned' type to the essential 'signed' type.</p></div>
+<div class="balloon" rel="238"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="245"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Value of the expression should not be converted from the essential 'unsigned' type to the essential 'signed' type.</p></div>
+<div class="balloon" rel="245"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="278"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'handle' expression should not be converted from the essential 'unsigned' type to the essential 'rd_bus_t' type.</p></div>
+<div class="balloon" rel="322"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="323"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="324"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="325"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="343"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2537/" target="_blank">V2537</a> Functions should not have unused parameters. Consider inspecting the parameter: 'bus'.</p></div>
+<div class="balloon" rel="343"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2537/" target="_blank">V2537</a> Functions should not have unused parameters. Consider inspecting the parameter: 'handle'.</p></div>
+<div class="balloon" rel="387"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="388"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="389"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="390"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="391"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="392"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="397"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="375"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="424"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="428"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="432"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="436"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="440"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="444"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="448"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xC9U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="452"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF1U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="456"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xCAU)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="460"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="421"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2520/" target="_blank">V2520</a> Every switch-clause should be terminated by an unconditional 'break' statement.</p></div>
+<div class="balloon" rel="412"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="482"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="483"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="484"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="485"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="470"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="509"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="513"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="517"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="521"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE0U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="497"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="544"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="545"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="546"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="547"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="550"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="532"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="576"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="580"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="584"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="588"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="592"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="573"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2520/" target="_blank">V2520</a> Every switch-clause should be terminated by an unconditional 'break' statement.</p></div>
+<div class="balloon" rel="564"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="627"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="631"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Constant expression of the case label should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="634"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="645"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Constant expression of the case label should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="648"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="652"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U << 3U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="629"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2520/" target="_blank">V2520</a> Every switch-clause should be terminated by an unconditional 'break' statement.</p></div>
+<div class="balloon" rel="607"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="693"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U << 2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="699"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="703"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="707"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="711"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="715"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="696"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2520/" target="_blank">V2520</a> Every switch-clause should be terminated by an unconditional 'break' statement.</p></div>
+<div class="balloon" rel="682"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="737"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF4U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="752"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="722"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="781"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Constant expression of the case label should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="782"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="785"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Constant expression of the case label should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="786"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xF4U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="790"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(0xE2U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="779"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2520/" target="_blank">V2520</a> Every switch-clause should be terminated by an unconditional 'break' statement.</p></div>
+<div class="balloon" rel="775"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="808"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '*' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="808"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '+' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="808"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Value of the expression should not be converted to the narrower essential 'signed' type.</p></div>
+<div class="balloon" rel="845"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '<' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="960"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '*' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="988"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="989"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="990"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="991"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="993"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'acceleration[0] / 1000.0' expression should not be converted to the narrower essential 'floating' type.</p></div>
+<div class="balloon" rel="994"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'acceleration[1] / 1000.0' expression should not be converted to the narrower essential 'floating' type.</p></div>
+<div class="balloon" rel="995"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'acceleration[2] / 1000.0' expression should not be converted to the narrower essential 'floating' type.</p></div>
+<div class="balloon" rel="951"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="1036"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The 'elements' operand of the '!' operator should not have the essential 'unsigned' type.</p></div>
+<div class="balloon" rel="1036"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2570/" target="_blank">V2570</a> Operands of the '!' operator should have bool essential type.</p></div>
+<div class="balloon" rel="1038"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="1046"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '* num_elements' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="1062"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="1063"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="1064"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="1066"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'acceleration[0] / 1000.0' expression should not be converted to the narrower essential 'floating' type.</p></div>
+<div class="balloon" rel="1067"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'acceleration[1] / 1000.0' expression should not be converted to the narrower essential 'floating' type.</p></div>
+<div class="balloon" rel="1068"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'acceleration[2] / 1000.0' expression should not be converted to the narrower essential 'floating' type.</p></div>
+<div class="balloon" rel="1049"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v574/" target="_blank">V574</a> The 'p_data' pointer is used simultaneously as an array and as a pointer to single object. Check lines: 1049, 1074.</p></div>
+<div class="balloon" rel="1025"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="1088"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '==' operator should have the same essential type. The current types are: 'signed' and 'Boolean'.</p></div>
+<div class="balloon" rel="1094"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="1129"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>' operator should have the same essential type. The current types are: 'signed' and 'floating'.</p></div>
+<div class="balloon" rel="1135"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="1136"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="1137"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="1138"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the '(1U)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="1154"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'ri_lis2dh12_scale_get(& scale)' expression should not be converted from the essential 'unsigned' type to the essential 'signed' type.</p></div>
+<div class="balloon" rel="1154"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="1180"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2004/" target="_blank">V2004</a> Explicit conversion from 'float' type to unsigned integer type: (uint32_t)(* limit_g / divisor)</p></div>
+<div class="balloon" rel="1180"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '+' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

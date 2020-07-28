@@ -1,0 +1,25 @@
+var ruuvi__interface__shtcx_8c =
+[
+    [ "RETURN_SUCCESS_ON_VALID", "ruuvi__interface__shtcx_8c.html#ga59ad04a27678ee7b16070e43227e970b", null ],
+    [ "STATUS_CRC_FAIL", "ruuvi__interface__shtcx_8c.html#ga88e9ad2752acfa79efa5f4cf30ce252f", null ],
+    [ "STATUS_ERR_BAD_DATA", "ruuvi__interface__shtcx_8c.html#gaa180f2c480b3cbe69f70136fe0ce18e0", null ],
+    [ "STATUS_OK", "ruuvi__interface__shtcx_8c.html#ga2403320c41f08e7567cb169de5db66b3", null ],
+    [ "STATUS_SLEEP_FAILED", "ruuvi__interface__shtcx_8c.html#ga6c60afe36a96c28538e47721af56b185", null ],
+    [ "STATUS_UNKNOWN_DEVICE", "ruuvi__interface__shtcx_8c.html#ga6bbd69a9bc99e6db05c47d0c3c0ae039", null ],
+    [ "STATUS_WAKEUP_FAILED", "ruuvi__interface__shtcx_8c.html#ga71c33d68489944ab8ecce69e3229b801", null ],
+    [ "VERIFY_SENSOR_SLEEPS", "ruuvi__interface__shtcx_8c.html#ga97355e96c09fc9896da2a8dd1d95c9b4", null ],
+    [ "ri_shtcx_data_get", "ruuvi__interface__shtcx_8c.html#ga9603edf39c79ca9bc3f5fdb867d35c88", null ],
+    [ "ri_shtcx_dsp_get", "ruuvi__interface__shtcx_8c.html#ga611bf7d165cf669a60debea77c412803", null ],
+    [ "ri_shtcx_dsp_set", "ruuvi__interface__shtcx_8c.html#ga719fa017797d87a6df84984552e83dfd", null ],
+    [ "ri_shtcx_init", "ruuvi__interface__shtcx_8c.html#gab9f6353eedcc710da93bbc2327b3e9d2", null ],
+    [ "ri_shtcx_mode_get", "ruuvi__interface__shtcx_8c.html#ga9a217433a6ba5cccaebcbadd9a9a3985", null ],
+    [ "ri_shtcx_mode_set", "ruuvi__interface__shtcx_8c.html#ga8726bc2361a3010287aa691d847c3ab2", null ],
+    [ "ri_shtcx_resolution_get", "ruuvi__interface__shtcx_8c.html#gae1a5b840c3ee02850f9177effef74076", null ],
+    [ "ri_shtcx_resolution_set", "ruuvi__interface__shtcx_8c.html#gaffdd7ab667a04d8717bb09452dc85d2f", null ],
+    [ "ri_shtcx_samplerate_get", "ruuvi__interface__shtcx_8c.html#gab6e0241e1ad3d2a8ab5d2d217a062cc0", null ],
+    [ "ri_shtcx_samplerate_set", "ruuvi__interface__shtcx_8c.html#ga47a9b8b6493b2f8599ba329b79c4eb71", null ],
+    [ "ri_shtcx_scale_get", "ruuvi__interface__shtcx_8c.html#ga93636146071e540adb5135a9bb741307", null ],
+    [ "ri_shtcx_scale_set", "ruuvi__interface__shtcx_8c.html#ga32c49dd9ad3de9d49d83c80c986c036e", null ],
+    [ "ri_shtcx_uninit", "ruuvi__interface__shtcx_8c.html#ga446ebfeb2f9d5d7383eda0b0c097e9a6", null ],
+    [ "sensirion_sleep_usec", "ruuvi__interface__shtcx_8c.html#ga6f99e3cda12ac5dcb934ef20f94f15f4", null ]
+];

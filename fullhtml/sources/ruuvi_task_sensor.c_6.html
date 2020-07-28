@@ -1,0 +1,267 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ruuvi_task_sensor.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;ruuvi_driver_enabled_modules.h&quot;</a>
+<a name="ln2">#if RT_SENSOR_ENABLED</a>
+<a name="ln3">#include &quot;ruuvi_driver_error.h&quot;</a>
+<a name="ln4">#include &quot;ruuvi_driver_sensor.h&quot;</a>
+<a name="ln5">#include &quot;ruuvi_interface_log.h&quot;</a>
+<a name="ln6">#include &quot;ruuvi_task_flash.h&quot;</a>
+<a name="ln7">#include &quot;ruuvi_task_sensor.h&quot;</a>
+<a name="ln8"> </a>
+<a name="ln9">#include &lt;string.h&gt;</a>
+<a name="ln10"> </a>
+<a name="ln11">#ifndef TASK_SENSOR_LOG_LEVEL</a>
+<a name="ln12">#define TASK_SENSOR_LOG_LEVEL RI_LOG_LEVEL_DEBUG</a>
+<a name="ln13">#endif</a>
+<a name="ln14"> </a>
+<a name="ln15">static inline void LOG (const char * const msg)</a>
+<a name="ln16">{</a>
+<a name="ln17">    ri_log (TASK_SENSOR_LOG_LEVEL, msg);</a>
+<a name="ln18">}</a>
+<a name="ln19"> </a>
+<a name="ln20">static inline void LOGD (const char * const msg)</a>
+<a name="ln21">{</a>
+<a name="ln22">    ri_log (RI_LOG_LEVEL_DEBUG, msg);</a>
+<a name="ln23">}</a>
+<a name="ln24"> </a>
+<a name="ln25">static inline void LOGHEX (const uint8_t * const msg, const size_t len)</a>
+<a name="ln26">{</a>
+<a name="ln27">    ri_log_hex (TASK_SENSOR_LOG_LEVEL, msg, len);</a>
+<a name="ln28">}</a>
+<a name="ln29"> </a>
+<a name="ln30">/** @brief Initialize sensor CTX</a>
+<a name="ln31"> *</a>
+<a name="ln32"> * To initialize a sensor, initialization function, sensor bus and sensor handle must</a>
+<a name="ln33"> * be set. After initialization, sensor control structure is ready to use,</a>
+<a name="ln34"> * initial configuration is set to actual values on sensor.</a>
+<a name="ln35"> *</a>
+<a name="ln36"> * To configure the sensor, set the sensor configuration in struct and call</a>
+<a name="ln37"> * @ref rt_sensor_configure.</a>
+<a name="ln38"> *</a>
+<a name="ln39"> * @param[in] sensor Sensor to initialize.</a>
+<a name="ln40"> *</a>
+<a name="ln41"> * @return RD_SUCCESS on success.</a>
+<a name="ln42"> * @return RD_ERROR_NULL if sensor is NULL.</a>
+<a name="ln43"> * @return error code from sensor on other error.</a>
+<a name="ln44"> */</a>
+<a name="ln45">rd_status_t rt_sensor_initialize (rt_sensor_ctx_t * const sensor)</a>
+<a name="ln46">{</a>
+<a name="ln47">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln48"> </a>
+<a name="ln49">    if ( (NULL == sensor) || (NULL == sensor-&gt;init))</a>
+<a name="ln50">    {</a>
+<a name="ln51">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln52">    }</a>
+<a name="ln53">    else</a>
+<a name="ln54">    {</a>
+<a name="ln55">        err_code = sensor-&gt;init (&amp; (sensor-&gt;sensor), sensor-&gt;bus, sensor-&gt;handle);</a>
+<a name="ln56">    }</a>
+<a name="ln57"> </a>
+<a name="ln58">    return err_code;</a>
+<a name="ln59">}</a>
+<a name="ln60"> </a>
+<a name="ln61">/** @brief Store the sensor state to NVM.</a>
+<a name="ln62"> *</a>
+<a name="ln63"> * @param[in] sensor Sensor to store.</a>
+<a name="ln64"> *</a>
+<a name="ln65"> * @return RD_SUCCESS on success.</a>
+<a name="ln66"> * @return RD_ERROR_NULL if sensor is NULL.</a>
+<a name="ln67"> * @return error code from sensor on other error.</a>
+<a name="ln68"> */</a>
+<a name="ln69">rd_status_t rt_sensor_store (rt_sensor_ctx_t * const sensor)</a>
+<a name="ln70">{</a>
+<a name="ln71">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln72"> </a>
+<a name="ln73">    if (NULL == sensor)</a>
+<a name="ln74">    {</a>
+<a name="ln75">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln76">    }</a>
+<a name="ln77">    else if (rt_flash_busy())</a>
+<a name="ln78">    {</a>
+<a name="ln79">        err_code |= RD_ERROR_BUSY;</a>
+<a name="ln80">    }</a>
+<a name="ln81">    else</a>
+<a name="ln82">    {</a>
+<a name="ln83">        err_code |= rt_flash_store (sensor-&gt;nvm_file, sensor-&gt;nvm_record,</a>
+<a name="ln84">                                    &amp; (sensor-&gt;configuration),</a>
+<a name="ln85">                                    sizeof (sensor-&gt;configuration));</a>
+<a name="ln86">    }</a>
+<a name="ln87"> </a>
+<a name="ln88">    return err_code;</a>
+<a name="ln89">}</a>
+<a name="ln90"> </a>
+<a name="ln91">/** @brief Load the sensor state from NVM.</a>
+<a name="ln92"> *</a>
+<a name="ln93"> * @param[in] sensor Sensor to store.</a>
+<a name="ln94"> *</a>
+<a name="ln95"> * @return RD_SUCCESS on success.</a>
+<a name="ln96"> * @return RD_ERROR_NULL if sensor is NULL.</a>
+<a name="ln97"> * @return error code from sensor on other error.</a>
+<a name="ln98"> */</a>
+<a name="ln99">rd_status_t rt_sensor_load (rt_sensor_ctx_t * const sensor)</a>
+<a name="ln100">{</a>
+<a name="ln101">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln102"> </a>
+<a name="ln103">    if (NULL == sensor)</a>
+<a name="ln104">    {</a>
+<a name="ln105">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln106">    }</a>
+<a name="ln107">    else if (rt_flash_busy())</a>
+<a name="ln108">    {</a>
+<a name="ln109">        err_code |= RD_ERROR_BUSY;</a>
+<a name="ln110">    }</a>
+<a name="ln111">    else</a>
+<a name="ln112">    {</a>
+<a name="ln113">        err_code |= rt_flash_load (sensor-&gt;nvm_file, sensor-&gt;nvm_record,</a>
+<a name="ln114">                                   &amp; (sensor-&gt;configuration),</a>
+<a name="ln115">                                   sizeof (sensor-&gt;configuration));</a>
+<a name="ln116">    }</a>
+<a name="ln117"> </a>
+<a name="ln118">    return err_code;</a>
+<a name="ln119">}</a>
+<a name="ln120"> </a>
+<a name="ln121">/** @brief Configure a sensor with given settings.</a>
+<a name="ln122"> *</a>
+<a name="ln123"> * @param[in,out] sensor In: Sensor to configure.</a>
+<a name="ln124">                         Out: Sensor-&gt;configuration will be set to actual configuration.</a>
+<a name="ln125"> *</a>
+<a name="ln126"> * @return RD_SUCCESS on success.</a>
+<a name="ln127"> * @return RD_ERROR_NULL if sensor is NULL.</a>
+<a name="ln128"> * @return error code from sensor on other error.</a>
+<a name="ln129"> */</a>
+<a name="ln130">rd_status_t rt_sensor_configure (rt_sensor_ctx_t * const sensor)</a>
+<a name="ln131">{</a>
+<a name="ln132">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln133"> </a>
+<a name="ln134">    if (NULL == sensor)</a>
+<a name="ln135">    {</a>
+<a name="ln136">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln137">    }</a>
+<a name="ln138">    else if (NULL == sensor-&gt;sensor.configuration_set)</a>
+<a name="ln139">    {</a>
+<a name="ln140">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln141">    }</a>
+<a name="ln142">    else</a>
+<a name="ln143">    {</a>
+<a name="ln144">        LOG (&quot;\r\nAttempting to configure &quot;);</a>
+<a name="ln145">        LOG (sensor-&gt;sensor.name);</a>
+<a name="ln146">        LOG (&quot; with:\r\n&quot;);</a>
+<a name="ln147">        ri_log_sensor_configuration (TASK_SENSOR_LOG_LEVEL,</a>
+<a name="ln148">                                     &amp; (sensor-&gt;configuration), &quot;&quot;);</a>
+<a name="ln149">        err_code |= sensor-&gt;sensor.configuration_set (&amp; (sensor-&gt;sensor),</a>
+<a name="ln150">                    &amp; (sensor-&gt;configuration));</a>
+<a name="ln151">        LOG (&quot;Actual configuration:\r\n&quot;);</a>
+<a name="ln152">        ri_log_sensor_configuration (TASK_SENSOR_LOG_LEVEL,</a>
+<a name="ln153">                                     &amp; (sensor-&gt;configuration), &quot;&quot;);</a>
+<a name="ln154">    }</a>
+<a name="ln155"> </a>
+<a name="ln156">    return err_code;</a>
+<a name="ln157">}</a>
+<a name="ln158"> </a>
+<a name="ln159">/**</a>
+<a name="ln160"> * @brief Read sensors and encode to given buffer in Ruuvi DF5.</a>
+<a name="ln161"> *</a>
+<a name="ln162"> * @param[in] buffer uint8_t array with length of 24 bytes.</a>
+<a name="ln163"> * @return RD_SUCCESS if data was encoded</a>
+<a name="ln164"> */</a>
+<a name="ln165">//ruuvi_endpoint_status_t task_sensor_encode_to_5 (uint8_t * const buffer);</a>
+<a name="ln166"> </a>
+<a name="ln167">/**</a>
+<a name="ln168"> * @brief Search for requested sensor backend in given list of sensors.</a>
+<a name="ln169"> *</a>
+<a name="ln170"> * @param[in] sensor_list Array of sensors to search the backend from.</a>
+<a name="ln171"> * @param[in] count Number of sensor backends in the list.</a>
+<a name="ln172"> * @param[in] name NULL-terminated, max 9-byte (including trailing NULL) string</a>
+<a name="ln173"> *                 representation of sensor.</a>
+<a name="ln174"> * @return pointer to requested sensor CTX if found</a>
+<a name="ln175"> * @return NULL if requested sensor was not found</a>
+<a name="ln176"> */</a>
+<a name="ln177">rt_sensor_ctx_t * rt_sensor_find_backend (rt_sensor_ctx_t * const sensor_list,</a>
+<a name="ln178">        const size_t count, const char * const name)</a>
+<a name="ln179">{</a>
+<a name="ln180">    rt_sensor_ctx_t * p_sensor = NULL;</a>
+<a name="ln181"> </a>
+<a name="ln182">    for (size_t ii = 0; (count &gt; ii) &amp;&amp; (NULL == p_sensor); ii++)</a>
+<a name="ln183">    {</a>
+<a name="ln184">        if (0 == strcmp (sensor_list[ii].sensor.name, name))</a>
+<a name="ln185">        {</a>
+<a name="ln186">            p_sensor = &amp; (sensor_list[ii]);</a>
+<a name="ln187">        }</a>
+<a name="ln188">    }</a>
+<a name="ln189"> </a>
+<a name="ln190">    return p_sensor;</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">/**</a>
+<a name="ln194"> * @brief Search for a sensor which can provide requested values</a>
+<a name="ln195"> *</a>
+<a name="ln196"> * @param[in] sensor_list Array of sensors to search the backend from.</a>
+<a name="ln197"> * @param[in] count Number of sensor backends in the list.</a>
+<a name="ln198"> * @param[in] values Fields which sensor must provide.</a>
+<a name="ln199"> * @return Pointer to requested sensor if found. If there are many candidates, first is</a>
+<a name="ln200"> *         returned</a>
+<a name="ln201"> * @return NULL if requested sensor was not found.</a>
+<a name="ln202"> */</a>
+<a name="ln203">rt_sensor_ctx_t * rt_sensor_find_provider (rt_sensor_ctx_t * const</a>
+<a name="ln204">        sensor_list, const size_t count, rd_sensor_data_fields_t values)</a>
+<a name="ln205">{</a>
+<a name="ln206">    rt_sensor_ctx_t * p_sensor = NULL;</a>
+<a name="ln207"> </a>
+<a name="ln208">    for (size_t ii = 0; (count &gt; ii) &amp;&amp; (NULL == p_sensor); ii++)</a>
+<a name="ln209">    {</a>
+<a name="ln210">        if ( (values.bitfield &amp; sensor_list[ii].sensor.provides.bitfield) == values.bitfield)</a>
+<a name="ln211">        {</a>
+<a name="ln212">            p_sensor = &amp; (sensor_list[ii]);</a>
+<a name="ln213">        }</a>
+<a name="ln214">    }</a>
+<a name="ln215"> </a>
+<a name="ln216">    return p_sensor;</a>
+<a name="ln217">}</a>
+<a name="ln218">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="27"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'len' expression should not be converted from the essential 'unsigned' type to the essential 'ri_log_severity_t' type.</p></div>
+<div class="balloon" rel="85"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'sizeof (sensor->configuration)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="115"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'sizeof (sensor->configuration)' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="20"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v524/" target="_blank">V524</a> It is odd that the body of 'LOGD' function is fully equivalent to the body of 'LOG' function.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

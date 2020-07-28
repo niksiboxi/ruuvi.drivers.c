@@ -1,0 +1,464 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ruuvi_task_gatt.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * Ruuvi Firmware 3.x GATT tasks.</a>
+<a name="ln3"> *</a>
+<a name="ln4"> * License: BSD-3</a>
+<a name="ln5"> * Author: Otso Jousimaa &lt;otso@ojousima.net&gt;</a>
+<a name="ln6"> **/</a>
+<a name="ln7">#include &quot;ruuvi_driver_enabled_modules.h&quot;</a>
+<a name="ln8">#include &quot;ruuvi_driver_error.h&quot;</a>
+<a name="ln9">#include &quot;ruuvi_interface_atomic.h&quot;</a>
+<a name="ln10">#include &quot;ruuvi_interface_communication_ble_advertising.h&quot;</a>
+<a name="ln11">#include &quot;ruuvi_interface_communication_ble_gatt.h&quot;</a>
+<a name="ln12">#include &quot;ruuvi_interface_communication_radio.h&quot;</a>
+<a name="ln13">#include &quot;ruuvi_interface_communication.h&quot;</a>
+<a name="ln14">#include &quot;ruuvi_interface_log.h&quot;</a>
+<a name="ln15">#include &quot;ruuvi_interface_rtc.h&quot;</a>
+<a name="ln16">#include &quot;ruuvi_interface_scheduler.h&quot;</a>
+<a name="ln17">#include &quot;ruuvi_task_advertisement.h&quot;</a>
+<a name="ln18">#include &quot;ruuvi_task_communication.h&quot;</a>
+<a name="ln19">#include &quot;ruuvi_task_gatt.h&quot;</a>
+<a name="ln20">#if RT_GATT_ENABLED</a>
+<a name="ln21"> </a>
+<a name="ln22">#include &lt;stdlib.h&gt;</a>
+<a name="ln23">#include &lt;stdio.h&gt;</a>
+<a name="ln24">#include &lt;string.h&gt;</a>
+<a name="ln25"> </a>
+<a name="ln26">#ifndef TASK_GATT_LOG_LEVEL</a>
+<a name="ln27">#define TASK_GATT_LOG_LEVEL RI_LOG_LEVEL_INFO</a>
+<a name="ln28">#endif</a>
+<a name="ln29"> </a>
+<a name="ln30">static inline void LOGD (const char * const msg)</a>
+<a name="ln31">{</a>
+<a name="ln32">    ri_log (RI_LOG_LEVEL_DEBUG, msg);</a>
+<a name="ln33">}</a>
+<a name="ln34"> </a>
+<a name="ln35">static inline void LOGDHEX (const uint8_t * const msg, const size_t len)</a>
+<a name="ln36">{</a>
+<a name="ln37">    ri_log_hex (RI_LOG_LEVEL_DEBUG, msg, len);</a>
+<a name="ln38">}</a>
+<a name="ln39"> </a>
+<a name="ln40">static ri_comm_channel_t m_channel;   //!&lt; API for sending data.</a>
+<a name="ln41">static bool m_is_init;</a>
+<a name="ln42">static bool m_nus_is_init;</a>
+<a name="ln43">static bool m_dis_is_init;</a>
+<a name="ln44">static bool m_dfu_is_init;</a>
+<a name="ln45">static bool m_nus_is_connected;</a>
+<a name="ln46">static char m_name[SCAN_RSP_NAME_MAX_LEN + 1] = { 0 };</a>
+<a name="ln47"> </a>
+<a name="ln48">static ri_comm_cb_t m_on_connected;    //!&lt; Callback for connection established</a>
+<a name="ln49">static ri_comm_cb_t m_on_disconnected; //!&lt; Callback for connection lost</a>
+<a name="ln50">static ri_comm_cb_t m_on_received;     //!&lt; Callback for data received</a>
+<a name="ln51">static ri_comm_cb_t m_on_sent;         //!&lt; Callback for data sent</a>
+<a name="ln52"> </a>
+<a name="ln53">// https://github.com/arm-embedded/gcc-arm-none-eabi.debian/blob/master/src/libiberty/strnlen.c</a>
+<a name="ln54">// Not included when compiled with std=c99.</a>
+<a name="ln55">static inline size_t safe_strlen (const char * s, size_t maxlen)</a>
+<a name="ln56">{</a>
+<a name="ln57">    size_t i;</a>
+<a name="ln58"> </a>
+<a name="ln59">    for (i = 0; (i &lt; maxlen) &amp;&amp; ('\0' != s[i]); ++i);</a>
+<a name="ln60"> </a>
+<a name="ln61">    return i;</a>
+<a name="ln62">}</a>
+<a name="ln63"> </a>
+<a name="ln64">#ifdef CEEDLING</a>
+<a name="ln65">void rt_gatt_mock_state_reset()</a>
+<a name="ln66">{</a>
+<a name="ln67">    m_on_connected = NULL;</a>
+<a name="ln68">    m_on_disconnected = NULL;</a>
+<a name="ln69">    m_on_received = NULL;</a>
+<a name="ln70">    m_on_sent = NULL;</a>
+<a name="ln71">    m_is_init = false;</a>
+<a name="ln72">    m_nus_is_init = false;</a>
+<a name="ln73">    m_dfu_is_init = false;</a>
+<a name="ln74">    m_dis_is_init = false;</a>
+<a name="ln75">    m_nus_is_connected = false;</a>
+<a name="ln76">    memset (&amp;m_channel, 0, sizeof (ri_comm_channel_t));</a>
+<a name="ln77">    memset (m_name, 0, sizeof (m_name));</a>
+<a name="ln78">}</a>
+<a name="ln79">#endif</a>
+<a name="ln80"> </a>
+<a name="ln81">/**</a>
+<a name="ln82"> * @brief Event handler for NUS events</a>
+<a name="ln83"> *</a>
+<a name="ln84"> * This function is called in interrupt context, which allows for real-time processing</a>
+<a name="ln85"> * such as feeding softdevice data buffers during connection event.</a>
+<a name="ln86"> * Care must be taken to not call any function which requires external peripherals,</a>
+<a name="ln87"> * such as sensors in this context.</a>
+<a name="ln88"> *</a>
+<a name="ln89"> * If sensors must be read / configured as a response to GATT event, schedule</a>
+<a name="ln90"> * the action and send the results back during next connection event by buffering</a>
+<a name="ln91"> * the response with rt_gatt_send.</a>
+<a name="ln92"> *</a>
+<a name="ln93"> * @param evt Event type</a>
+<a name="ln94"> * @param p_data pointer to event data, if event is</a>
+<a name="ln95"> *               @c RI_COMMUNICATION_RECEIVED received data, NULL otherwise.</a>
+<a name="ln96"> * @param data_len number of bytes in received data, 0 if p_data is NULL.</a>
+<a name="ln97"> *</a>
+<a name="ln98"> */</a>
+<a name="ln99">#ifndef CEEDLING</a>
+<a name="ln100">static</a>
+<a name="ln101">#endif</a>
+<a name="ln102">rd_status_t rt_gatt_on_nus_isr (ri_comm_evt_t evt,</a>
+<a name="ln103">                                void * p_data, size_t data_len)</a>
+<a name="ln104">{</a>
+<a name="ln105">    switch (evt)</a>
+<a name="ln106">    {</a>
+<a name="ln107">        // Note: This gets called only after the NUS notifications have been registered.</a>
+<a name="ln108">        case RI_COMM_CONNECTED:</a>
+<a name="ln109">            m_nus_is_connected = true;</a>
+<a name="ln110">            (NULL != m_on_connected) ? m_on_connected (p_data, data_len) : false;</a>
+<a name="ln111">            break;</a>
+<a name="ln112"> </a>
+<a name="ln113">        case RI_COMM_DISCONNECTED:</a>
+<a name="ln114">            m_nus_is_connected = false;</a>
+<a name="ln115">            (NULL != m_on_disconnected) ? m_on_disconnected (p_data, data_len) : false;</a>
+<a name="ln116">            break;</a>
+<a name="ln117"> </a>
+<a name="ln118">        case RI_COMM_SENT:</a>
+<a name="ln119">            (NULL != m_on_sent) ? m_on_sent (p_data, data_len) : false;</a>
+<a name="ln120">            break;</a>
+<a name="ln121"> </a>
+<a name="ln122">        case RI_COMM_RECEIVED:</a>
+<a name="ln123">            (NULL != m_on_received) ? m_on_received (p_data, data_len) : false;</a>
+<a name="ln124">            break;</a>
+<a name="ln125"> </a>
+<a name="ln126">        default:</a>
+<a name="ln127">            break;</a>
+<a name="ln128">    }</a>
+<a name="ln129"> </a>
+<a name="ln130">    return RD_SUCCESS;</a>
+<a name="ln131">}</a>
+<a name="ln132"> </a>
+<a name="ln133">rd_status_t rt_gatt_dis_init (const ri_comm_dis_init_t * const p_dis)</a>
+<a name="ln134">{</a>
+<a name="ln135">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln136"> </a>
+<a name="ln137">    if (NULL == p_dis)</a>
+<a name="ln138">    {</a>
+<a name="ln139">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln140">    }</a>
+<a name="ln141">    else if (rt_gatt_is_init() &amp;&amp; (!m_dis_is_init))</a>
+<a name="ln142">    {</a>
+<a name="ln143">        err_code |= ri_gatt_dis_init (p_dis);</a>
+<a name="ln144">        m_dis_is_init = (RD_SUCCESS == err_code);</a>
+<a name="ln145">    }</a>
+<a name="ln146">    else</a>
+<a name="ln147">    {</a>
+<a name="ln148">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln149">    }</a>
+<a name="ln150"> </a>
+<a name="ln151">    return err_code;</a>
+<a name="ln152">}</a>
+<a name="ln153"> </a>
+<a name="ln154">rd_status_t rt_gatt_nus_init (void)</a>
+<a name="ln155">{</a>
+<a name="ln156">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln157"> </a>
+<a name="ln158">    if (rt_gatt_is_init() &amp;&amp; (!m_nus_is_init))</a>
+<a name="ln159">    {</a>
+<a name="ln160">        err_code |= ri_gatt_nus_init (&amp;m_channel);</a>
+<a name="ln161"> </a>
+<a name="ln162">        if (RD_SUCCESS == err_code)</a>
+<a name="ln163">        {</a>
+<a name="ln164">            m_channel.on_evt = rt_gatt_on_nus_isr;</a>
+<a name="ln165">            m_nus_is_init = true;</a>
+<a name="ln166">        }</a>
+<a name="ln167">    }</a>
+<a name="ln168">    else</a>
+<a name="ln169">    {</a>
+<a name="ln170">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln171">    }</a>
+<a name="ln172"> </a>
+<a name="ln173">    return err_code;</a>
+<a name="ln174">}</a>
+<a name="ln175"> </a>
+<a name="ln176">rd_status_t rt_gatt_dfu_init (void)</a>
+<a name="ln177">{</a>
+<a name="ln178">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln179"> </a>
+<a name="ln180">    if (rt_gatt_is_init() &amp;&amp; (!m_dfu_is_init))</a>
+<a name="ln181">    {</a>
+<a name="ln182">        err_code |= ri_gatt_dfu_init();</a>
+<a name="ln183">        m_dfu_is_init = (RD_SUCCESS == err_code);</a>
+<a name="ln184">    }</a>
+<a name="ln185">    else</a>
+<a name="ln186">    {</a>
+<a name="ln187">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln188">    }</a>
+<a name="ln189"> </a>
+<a name="ln190">    return err_code;</a>
+<a name="ln191">}</a>
+<a name="ln192"> </a>
+<a name="ln193">rd_status_t rt_gatt_init (const char * const name)</a>
+<a name="ln194">{</a>
+<a name="ln195">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln196"> </a>
+<a name="ln197">    if (NULL == name)</a>
+<a name="ln198">    {</a>
+<a name="ln199">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln200">    }</a>
+<a name="ln201">    else if (rt_adv_is_init() &amp;&amp; (!rt_gatt_is_init()))</a>
+<a name="ln202">    {</a>
+<a name="ln203">        const size_t name_length = safe_strlen (name, sizeof (m_name));</a>
+<a name="ln204"> </a>
+<a name="ln205">        if (sizeof (m_name) &gt; name_length)</a>
+<a name="ln206">        {</a>
+<a name="ln207">            err_code |= ri_gatt_init();</a>
+<a name="ln208">            memcpy (m_name, name, name_length);</a>
+<a name="ln209">            m_name[name_length] = '\0';</a>
+<a name="ln210">        }</a>
+<a name="ln211">        else</a>
+<a name="ln212">        {</a>
+<a name="ln213">            err_code |= RD_ERROR_INVALID_LENGTH;</a>
+<a name="ln214">        }</a>
+<a name="ln215">    }</a>
+<a name="ln216">    else</a>
+<a name="ln217">    {</a>
+<a name="ln218">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln219">    }</a>
+<a name="ln220"> </a>
+<a name="ln221">    if (RD_SUCCESS == err_code)</a>
+<a name="ln222">    {</a>
+<a name="ln223">        m_is_init = true;</a>
+<a name="ln224">    }</a>
+<a name="ln225"> </a>
+<a name="ln226">    return err_code;</a>
+<a name="ln227">}</a>
+<a name="ln228"> </a>
+<a name="ln229">rd_status_t rt_gatt_enable (void)</a>
+<a name="ln230">{</a>
+<a name="ln231">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln232"> </a>
+<a name="ln233">    if (rt_gatt_is_init())</a>
+<a name="ln234">    {</a>
+<a name="ln235">        err_code |= rt_adv_connectability_set (true, m_name);</a>
+<a name="ln236">    }</a>
+<a name="ln237">    else</a>
+<a name="ln238">    {</a>
+<a name="ln239">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln240">    }</a>
+<a name="ln241"> </a>
+<a name="ln242">    return err_code;</a>
+<a name="ln243">}</a>
+<a name="ln244"> </a>
+<a name="ln245">rd_status_t rt_gatt_disable (void)</a>
+<a name="ln246">{</a>
+<a name="ln247">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln248"> </a>
+<a name="ln249">    if (rt_gatt_is_init())</a>
+<a name="ln250">    {</a>
+<a name="ln251">        err_code |= rt_adv_connectability_set (false, NULL);</a>
+<a name="ln252">    }</a>
+<a name="ln253">    else</a>
+<a name="ln254">    {</a>
+<a name="ln255">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln256">    }</a>
+<a name="ln257"> </a>
+<a name="ln258">    return err_code;</a>
+<a name="ln259">}</a>
+<a name="ln260"> </a>
+<a name="ln261">bool rt_gatt_is_init (void)</a>
+<a name="ln262">{</a>
+<a name="ln263">    return m_is_init;</a>
+<a name="ln264">}</a>
+<a name="ln265"> </a>
+<a name="ln266">/**</a>
+<a name="ln267"> * @brief check if NUS is connected, i.e. central has registered to TX notifications.</a>
+<a name="ln268"> *</a>
+<a name="ln269"> * @return true if NUS is connected, false otherwise.</a>
+<a name="ln270"> */</a>
+<a name="ln271">bool rt_gatt_nus_is_connected (void)</a>
+<a name="ln272">{</a>
+<a name="ln273">    return m_nus_is_connected &amp;&amp; (NULL != m_channel.send);</a>
+<a name="ln274">}</a>
+<a name="ln275"> </a>
+<a name="ln276">rd_status_t rt_gatt_send_asynchronous (ri_comm_message_t</a>
+<a name="ln277">                                       * const p_msg)</a>
+<a name="ln278">{</a>
+<a name="ln279">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln280"> </a>
+<a name="ln281">    // State, input check</a>
+<a name="ln282">    if (NULL == p_msg)</a>
+<a name="ln283">    {</a>
+<a name="ln284">        err_code |= RD_ERROR_NULL;</a>
+<a name="ln285">    }</a>
+<a name="ln286">    else if (!rt_gatt_nus_is_connected())</a>
+<a name="ln287">    {</a>
+<a name="ln288">        err_code |= RD_ERROR_INVALID_STATE;</a>
+<a name="ln289">    }</a>
+<a name="ln290">    else</a>
+<a name="ln291">    {</a>
+<a name="ln292">        // Try to put data to SD</a>
+<a name="ln293">        err_code |= m_channel.send (p_msg);</a>
+<a name="ln294"> </a>
+<a name="ln295">        // If success, return. Else put data to ringbuffer</a>
+<a name="ln296">        if (RD_SUCCESS == err_code)</a>
+<a name="ln297">        {</a>
+<a name="ln298">            LOGD (&quot;&gt;&gt;&gt;;&quot;);</a>
+<a name="ln299">            LOGDHEX (p_msg-&gt;data, p_msg-&gt;data_length);</a>
+<a name="ln300">            LOGD (&quot;\r\n&quot;);</a>
+<a name="ln301">        }</a>
+<a name="ln302">        else if (RD_ERROR_RESOURCES == err_code)</a>
+<a name="ln303">        {</a>
+<a name="ln304">            err_code = RD_ERROR_NO_MEM;</a>
+<a name="ln305">        }</a>
+<a name="ln306">        // If the error code is something else than buffer full, return error.</a>
+<a name="ln307">        else</a>
+<a name="ln308">        {</a>
+<a name="ln309">            RD_ERROR_CHECK (err_code, ~RD_ERROR_FATAL);</a>
+<a name="ln310">        }</a>
+<a name="ln311">    }</a>
+<a name="ln312"> </a>
+<a name="ln313">    return err_code;</a>
+<a name="ln314">}</a>
+<a name="ln315"> </a>
+<a name="ln316">void rt_gatt_set_on_connected_isr (const ri_comm_cb_t cb)</a>
+<a name="ln317">{</a>
+<a name="ln318">    m_on_connected = cb;</a>
+<a name="ln319">}</a>
+<a name="ln320"> </a>
+<a name="ln321"> </a>
+<a name="ln322">void rt_gatt_set_on_disconn_isr (const ri_comm_cb_t cb)</a>
+<a name="ln323">{</a>
+<a name="ln324">    m_on_disconnected = cb;</a>
+<a name="ln325">}</a>
+<a name="ln326"> </a>
+<a name="ln327">void rt_gatt_set_on_received_isr (const ri_comm_cb_t cb)</a>
+<a name="ln328">{</a>
+<a name="ln329">    m_on_received = cb;</a>
+<a name="ln330">}</a>
+<a name="ln331"> </a>
+<a name="ln332">void rt_gatt_set_on_sent_isr (const ri_comm_cb_t cb)</a>
+<a name="ln333">{</a>
+<a name="ln334">    m_on_sent = cb;</a>
+<a name="ln335">}</a>
+<a name="ln336"> </a>
+<a name="ln337">bool rt_gatt_is_nus_enabled (void)</a>
+<a name="ln338">{</a>
+<a name="ln339">    return m_nus_is_init;</a>
+<a name="ln340">}</a>
+<a name="ln341"> </a>
+<a name="ln342">#else</a>
+<a name="ln343">rd_status_t rt_gatt_send_asynchronous (ri_comm_message_t</a>
+<a name="ln344">                                       * const p_msg)</a>
+<a name="ln345">{</a>
+<a name="ln346">    return RD_ERROR_NOT_ENABLED;</a>
+<a name="ln347">}</a>
+<a name="ln348"> </a>
+<a name="ln349">rd_status_t rt_gatt_dfu_init (void)</a>
+<a name="ln350">{</a>
+<a name="ln351">    return RD_ERROR_NOT_ENABLED;</a>
+<a name="ln352">}</a>
+<a name="ln353"> </a>
+<a name="ln354">rd_status_t rt_gatt_dis_init (const ri_comm_dis_init_t * const dis)</a>
+<a name="ln355">{</a>
+<a name="ln356">    return RD_ERROR_NOT_ENABLED;</a>
+<a name="ln357">}</a>
+<a name="ln358"> </a>
+<a name="ln359">rd_status_t rt_gatt_nus_init()</a>
+<a name="ln360">{</a>
+<a name="ln361">    return RD_ERROR_NOT_ENABLED;</a>
+<a name="ln362">}</a>
+<a name="ln363"> </a>
+<a name="ln364">rd_status_t rt_gatt_init (const char * const name)</a>
+<a name="ln365">{</a>
+<a name="ln366">    return RD_ERROR_NOT_ENABLED;</a>
+<a name="ln367">}</a>
+<a name="ln368"> </a>
+<a name="ln369">rd_status_t rt_gatt_enable()</a>
+<a name="ln370">{</a>
+<a name="ln371">    return RD_ERROR_NOT_ENABLED;</a>
+<a name="ln372">}</a>
+<a name="ln373"> </a>
+<a name="ln374">rd_status_t rt_gatt_disable()</a>
+<a name="ln375">{</a>
+<a name="ln376">    return RD_ERROR_NOT_ENABLED;</a>
+<a name="ln377">}</a>
+<a name="ln378"> </a>
+<a name="ln379">bool rt_gatt_is_init()</a>
+<a name="ln380">{</a>
+<a name="ln381">    return false;</a>
+<a name="ln382">}</a>
+<a name="ln383"> </a>
+<a name="ln384">void rt_gatt_set_on_connected_isr (const ri_comm_cb_t cb)</a>
+<a name="ln385">{</a>
+<a name="ln386">    // No implementation needed</a>
+<a name="ln387">}</a>
+<a name="ln388"> </a>
+<a name="ln389"> </a>
+<a name="ln390">void rt_gatt_set_on_disconn_isr (const ri_comm_cb_t cb)</a>
+<a name="ln391">{</a>
+<a name="ln392">    // No implementation needed</a>
+<a name="ln393">}</a>
+<a name="ln394"> </a>
+<a name="ln395">void rt_gatt_set_on_received_isr (const ri_comm_cb_t cb)</a>
+<a name="ln396">{</a>
+<a name="ln397">    // No implementation needed</a>
+<a name="ln398">}</a>
+<a name="ln399"> </a>
+<a name="ln400">void rt_gatt_set_on_sent_isr (const ri_comm_cb_t cb)</a>
+<a name="ln401">{</a>
+<a name="ln402">    // No implementation needed</a>
+<a name="ln403">}</a>
+<a name="ln404"> </a>
+<a name="ln405">bool rt_gatt_is_nus_enabled (void)</a>
+<a name="ln406">{</a>
+<a name="ln407">    return false;</a>
+<a name="ln408">}</a>
+<a name="ln409"> </a>
+<a name="ln410">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="37"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'len' expression should not be converted from the essential 'unsigned' type to the essential 'ri_log_severity_t' type.</p></div>
+<div class="balloon" rel="46"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '+' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="59"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="59"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2507/" target="_blank">V2507</a> The body of the 'for' statement should be enclosed in braces.</p></div>
+<div class="balloon" rel="109"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+<div class="balloon" rel="114"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+<div class="balloon" rel="126"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2519/" target="_blank">V2519</a> The 'default' label should, besides a 'break' statement, contain either a statement or a comment.</p></div>
+<div class="balloon" rel="165"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+<div class="balloon" rel="223"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '=' operator should have the same essential type. The current types are: 'Boolean' and 'signed'.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

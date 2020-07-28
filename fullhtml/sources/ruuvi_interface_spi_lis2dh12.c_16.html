@@ -1,0 +1,119 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ruuvi_interface_spi_lis2dh12.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">/**</a>
+<a name="ln2"> * Ruuvi spi interface for lis2dh12</a>
+<a name="ln3"> *</a>
+<a name="ln4"> * License: BSD-3</a>
+<a name="ln5"> * Author: Otso Jousimaa &lt;otso@ojousima.net&gt;</a>
+<a name="ln6"> **/</a>
+<a name="ln7">#include &quot;ruuvi_driver_enabled_modules.h&quot;</a>
+<a name="ln8">#if RI_LIS2DH12_ENABLED</a>
+<a name="ln9">#include &lt;stdint.h&gt;</a>
+<a name="ln10">#include &lt;string.h&gt;</a>
+<a name="ln11"> </a>
+<a name="ln12">#include &quot;ruuvi_driver_error.h&quot;</a>
+<a name="ln13">#include &quot;ruuvi_driver_sensor.h&quot;</a>
+<a name="ln14">#include &quot;ruuvi_interface_gpio.h&quot;</a>
+<a name="ln15">#include &quot;ruuvi_interface_spi.h&quot;</a>
+<a name="ln16"> </a>
+<a name="ln17"> </a>
+<a name="ln18">int32_t ri_spi_lis2dh12_write (void * dev_ptr, uint8_t reg_addr,</a>
+<a name="ln19">                               uint8_t * reg_data, uint16_t len)</a>
+<a name="ln20">{</a>
+<a name="ln21">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln22">    uint8_t dev_id = * ( (uint8_t *) dev_ptr);</a>
+<a name="ln23">    // bit 0: READ bit. The value is 0.</a>
+<a name="ln24">    reg_addr &amp;= 0x7F;</a>
+<a name="ln25"> </a>
+<a name="ln26">    // bit 1: MS bit. When 0, does not increment the address; when 1, increments the address in</a>
+<a name="ln27">    // multiple read / writes.</a>
+<a name="ln28">    if (len &gt; 1) { reg_addr |= 0x40; }</a>
+<a name="ln29"> </a>
+<a name="ln30">    ri_gpio_id_t ss;</a>
+<a name="ln31">    ss = RD_HANDLE_TO_GPIO (dev_id);</a>
+<a name="ln32">    err_code |= ri_gpio_write (ss, RI_GPIO_LOW);</a>
+<a name="ln33">    err_code |= ri_spi_xfer_blocking (&amp;reg_addr, 1, NULL, 0);</a>
+<a name="ln34">    err_code |= ri_spi_xfer_blocking (reg_data, len, NULL, 0);</a>
+<a name="ln35">    err_code |= ri_gpio_write (ss, RI_GPIO_HIGH);</a>
+<a name="ln36">    return err_code;</a>
+<a name="ln37">}</a>
+<a name="ln38"> </a>
+<a name="ln39">int32_t ri_spi_lis2dh12_read (void * dev_ptr, uint8_t reg_addr,</a>
+<a name="ln40">                              uint8_t * reg_data, uint16_t len)</a>
+<a name="ln41">{</a>
+<a name="ln42">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln43">    uint8_t dev_id = * ( (uint8_t *) dev_ptr);</a>
+<a name="ln44">    // bit 0: READ bit. The value is 1.</a>
+<a name="ln45">    reg_addr |= 0x80;</a>
+<a name="ln46"> </a>
+<a name="ln47">    // bit 1: MS bit. When 0, does not increment the address; when 1, increments the address in</a>
+<a name="ln48">    // multiple read / writes.</a>
+<a name="ln49">    if (len &gt; 1) { reg_addr |= 0x40; }</a>
+<a name="ln50"> </a>
+<a name="ln51">    ri_gpio_id_t ss;</a>
+<a name="ln52">    ss = RD_HANDLE_TO_GPIO (dev_id);</a>
+<a name="ln53">    err_code |= ri_gpio_write (ss, RI_GPIO_LOW);</a>
+<a name="ln54">    err_code |= ri_spi_xfer_blocking (&amp;reg_addr, 1, NULL, 0);</a>
+<a name="ln55">    err_code |= ri_spi_xfer_blocking (NULL, 0, reg_data, len);</a>
+<a name="ln56">    err_code |= ri_gpio_write (ss, RI_GPIO_HIGH);</a>
+<a name="ln57">    return err_code;</a>
+<a name="ln58">}</a>
+<a name="ln59">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="22"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2571/" target="_blank">V2571</a> Pointer to void should not be converted to a pointer to object. Consider inspecting the expression: '(uint8_t *) dev_ptr'.</p></div>
+<div class="balloon" rel="24"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '0x7F' of the '&=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="24"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '&=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="28"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="28"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '0x40' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="28"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '|=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="31"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Value of the expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+<div class="balloon" rel="19"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2009/" target="_blank">V2009</a> Consider rendering the 'reg_data' pointer as a pointer to const.</p></div>
+<div class="balloon" rel="43"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2571/" target="_blank">V2571</a> Pointer to void should not be converted to a pointer to object. Consider inspecting the expression: '(uint8_t *) dev_ptr'.</p></div>
+<div class="balloon" rel="45"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '0x80' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="45"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '|=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="49"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="49"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2544/" target="_blank">V2544</a> The right operand '0x40' of the '|=' operator should not have the essential 'signed' type.</p></div>
+<div class="balloon" rel="49"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '|=' operator should have the same essential type. The current types are: 'unsigned' and 'signed'.</p></div>
+<div class="balloon" rel="52"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> Value of the expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>

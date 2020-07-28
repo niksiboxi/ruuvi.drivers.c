@@ -1,0 +1,126 @@
+
+<html>
+<head>
+
+  <meta http-equiv="Content-Type" content="text/html; charset=US-ASCII" />
+  <title>ruuvi_interface_i2c_bme280.c</title>
+
+  <link rel="stylesheet" href="../style.css"/>
+  <script src="../jquery-3.2.1.min.js"></script>
+</head>
+<body>
+
+<pre><code class = "cpp">
+<a name="ln1">#include &quot;ruuvi_driver_enabled_modules.h&quot;</a>
+<a name="ln2">#if RI_BME280_ENABLED &amp;&amp; RI_BME280_I2C_ENABLED</a>
+<a name="ln3">/**</a>
+<a name="ln4"> * @addtogroup I2C</a>
+<a name="ln5"> *</a>
+<a name="ln6"> */</a>
+<a name="ln7">/*@{*/</a>
+<a name="ln8">/**</a>
+<a name="ln9"> * @file ruuvi_interface_i2c_bme280.c</a>
+<a name="ln10"> * @author Otso Jousimaa &lt;otso@ojousima.net&gt;</a>
+<a name="ln11"> * @date 2020-04-28</a>
+<a name="ln12"> * @copyright Ruuvi Innovations Ltd, license BSD-3-Clause.</a>
+<a name="ln13"> * @brief Wrapper for BME280 I2C calls</a>
+<a name="ln14"> *</a>
+<a name="ln15"> */</a>
+<a name="ln16">#include &lt;stdint.h&gt;</a>
+<a name="ln17">#include &lt;string.h&gt;</a>
+<a name="ln18"> </a>
+<a name="ln19">#include &quot;ruuvi_driver_error.h&quot;</a>
+<a name="ln20">#include &quot;ruuvi_interface_gpio.h&quot;</a>
+<a name="ln21">#include &quot;ruuvi_interface_i2c.h&quot;</a>
+<a name="ln22">#include &quot;ruuvi_interface_yield.h&quot;</a>
+<a name="ln23"> </a>
+<a name="ln24">/*</a>
+<a name="ln25"> * Data on the bus should be like</a>
+<a name="ln26"> * |------------+---------------------|</a>
+<a name="ln27"> * | I2C action | Data                |</a>
+<a name="ln28"> * |------------+---------------------|</a>
+<a name="ln29"> * | Start      | -                   |</a>
+<a name="ln30"> * | Write      | (reg_addr)          |</a>
+<a name="ln31"> * | Write      | (reg_data[0])       |</a>
+<a name="ln32"> * | Write      | (....)              |</a>
+<a name="ln33"> * | Write      | (reg_data[len - 1]) |</a>
+<a name="ln34"> * | Stop       | -                   |</a>
+<a name="ln35"> * |------------+---------------------|</a>
+<a name="ln36"> */</a>
+<a name="ln37">int8_t ri_i2c_bme280_write (uint8_t dev_id, uint8_t reg_addr,</a>
+<a name="ln38">                            uint8_t * reg_data, uint16_t len)</a>
+<a name="ln39">{</a>
+<a name="ln40">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln41"> </a>
+<a name="ln42">    // Support only 1-byte writes</a>
+<a name="ln43">    if (1 &gt; len || 2 &lt; len) { return -1; }</a>
+<a name="ln44"> </a>
+<a name="ln45">    uint8_t wbuf[2] = {0};</a>
+<a name="ln46">    wbuf[0] = reg_addr;</a>
+<a name="ln47">    wbuf[1] = reg_data[0];</a>
+<a name="ln48">    err_code |= ri_i2c_write_blocking (dev_id, wbuf, 2, true);</a>
+<a name="ln49">    return (RD_SUCCESS == err_code) ? 0 : -1;</a>
+<a name="ln50">}</a>
+<a name="ln51"> </a>
+<a name="ln52">/*</a>
+<a name="ln53"> * Data on the bus should be like</a>
+<a name="ln54"> * |------------+---------------------|</a>
+<a name="ln55"> * | I2C action | Data                |</a>
+<a name="ln56"> * |------------+---------------------|</a>
+<a name="ln57"> * | Start      | -                   |</a>
+<a name="ln58"> * | Write      | (reg_addr)          |</a>
+<a name="ln59"> * | Stop       | -                   |</a>
+<a name="ln60"> * | Start      | -                   |</a>
+<a name="ln61"> * | Read       | (reg_data[0])       |</a>
+<a name="ln62"> * | Read       | (....)              |</a>
+<a name="ln63"> * | Read       | (reg_data[len - 1]) |</a>
+<a name="ln64"> * | Stop       | -                   |</a>
+<a name="ln65"> * |------------+---------------------|</a>
+<a name="ln66"> */</a>
+<a name="ln67"> </a>
+<a name="ln68">int8_t ri_i2c_bme280_read (uint8_t dev_id, uint8_t reg_addr,</a>
+<a name="ln69">                           uint8_t * reg_data, uint16_t len)</a>
+<a name="ln70">{</a>
+<a name="ln71">    rd_status_t err_code = RD_SUCCESS;</a>
+<a name="ln72">    err_code |= ri_i2c_write_blocking (dev_id, &amp;reg_addr, 1, true);</a>
+<a name="ln73">    err_code |= ri_i2c_read_blocking (dev_id, reg_data, len);</a>
+<a name="ln74">    return (RD_SUCCESS == err_code) ? 0 : -1;</a>
+<a name="ln75">}</a>
+<a name="ln76">#endif</a>
+
+</code></pre>
+<div class="balloon" rel="43"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '>' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="43"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2568/" target="_blank">V2568</a> Both operands of the '<' operator should have the same essential type. The current types are: 'signed' and 'unsigned'.</p></div>
+<div class="balloon" rel="38"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2009/" target="_blank">V2009</a> Consider rendering the 'reg_data' pointer as a pointer to const.</p></div>
+<div class="balloon" rel="37"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2506/" target="_blank">V2506</a> A function should have a single point of exit at the end.</p></div>
+<div class="balloon" rel="73"><p><span style="font-size:18px">&uarr;</span> <a href="https://www.viva64.com/en/w/v2572/" target="_blank">V2572</a> The value of the 'len' expression should not be converted to the narrower essential 'unsigned' type.</p></div>
+
+<link rel="stylesheet" href="highlight.css">
+<script src="highlight.pack.js"></script>
+<script src="highlightjs-line-numbers.js"></script>
+<script>hljs.initHighlightingOnLoad();</script>
+<script>hljs.initLineNumbersOnLoad();</script>
+<script>
+  $(document).ready(function() {
+      $('.balloon').each(function () {
+          var bl = $(this);
+          var line = bl.attr('rel');
+          var text = $('a[name="ln'+line+'"]').text();
+
+          var space_count = 0;
+          for(var i = 0; i<text.length; i++){
+              var char = text[i];
+              if((char !== ' ')&&(char !== '\t'))break;
+              if(char === '\t')space_count++;
+              space_count++;
+          }
+
+          bl.css('margin-left', space_count*8);
+          $('a[name="ln'+line+'"]').after(bl);
+      });
+
+      window.location = window.location;
+  });
+</script>
+</body>
+</html>
