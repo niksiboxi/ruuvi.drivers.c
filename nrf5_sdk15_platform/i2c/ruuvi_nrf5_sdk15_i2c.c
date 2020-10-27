@@ -104,7 +104,7 @@ static void on_complete(nrf_drv_twi_evt_t const *p_event, void *p_context)
 ruuvi_driver_status_t ruuvi_interface_i2c_init(const ruuvi_interface_i2c_init_config_t*
     config)
 {
-  ret_code_t err_code;
+  ret_code_t err_code = RUUVI_DRIVER_SUCCESS;
   nrf_drv_twi_frequency_t frequency = ruuvi_to_nrf_frequency(config->frequency);
   byte_timeout_set(config->frequency);
   const nrf_drv_twi_config_t twi_config =
