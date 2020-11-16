@@ -175,7 +175,7 @@ rd_status_t ri_i2c_init (const ri_i2c_init_config_t *
     }
 
     err_code = nrf_drv_twi_init (&m_twi, &twi_config, on_complete, NULL);
-    ri_i2c_scanner;
+    err_code = ri_i2c_scanner();
 #ifdef NRF_FIX_TWI_ISSUE_209
     byte_freq_set (&m_twi, frequency);
 #endif
