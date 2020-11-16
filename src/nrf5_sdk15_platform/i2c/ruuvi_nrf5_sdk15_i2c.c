@@ -50,6 +50,9 @@
 #include "ruuvi_interface_yield.h"
 #include "ruuvi_nrf5_sdk15_gpio.h"
 #include "ruuvi_nrf5_sdk15_error.h"
+#include "ruuvi_interface_log.h"
+
+#include <stdio.h>
 
 #ifndef NRF_FIX_TWI_ISSUE_209
 #define NRF_FIX_TWI_ISSUE_209
@@ -137,6 +140,8 @@ rd_status_t ri_i2c_scanner (void){
     if(err_code == NRF_SUCCESS)
     {
       detected_device = true;
+      ri_log(RI_LOG_LEVEL_DEBUG, "Found\n");
+      printf("Found!\n");
     }
   }
 
