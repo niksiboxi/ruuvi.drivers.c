@@ -59,6 +59,8 @@
 #define NRF_DRV_TWI_FREQ_390K (0x06200000UL) /*!< 390 kbps */
 #endif
 
+#define TWI_ADDRESSES 127
+
 static const nrf_drv_twi_t m_twi = NRF_DRV_TWI_INSTANCE (I2C_INSTANCE);
 static bool m_i2c_is_init        = false;
 static volatile bool m_tx_in_progress     = false;
@@ -123,6 +125,27 @@ static void on_complete (nrf_drv_twi_evt_t const * p_event, void * p_context)
     else if (p_event->type != NRF_DRV_TWI_EVT_DONE) { xfer_status |= NRF_ERROR_INTERNAL; }
 }
 
+rd_status_t ri_i2c_scanner (void){
+  uint8_t address;
+  uint8_t sample_data;
+  ret_code_t err_code;
+  bool detected_device = false;
+
+  for (address = 1; address <= TWI_ADDRESSES; address++)
+  {
+    err_code = nrf_drv_twi_rx(&m_twi, address, &sample_data, sizeof(sample_data));
+    if(err_code == NRF_SUCCESS)
+    {
+      detected_device = true;
+    }
+  }
+
+  if(detected_device)
+    return RD_SUCCESS;
+  else
+    return RD_ERROR_INTERNAL;
+}
+
 rd_status_t ri_i2c_init (const ri_i2c_init_config_t *
                          config)
 {
@@ -152,12 +175,13 @@ rd_status_t ri_i2c_init (const ri_i2c_init_config_t *
     }
 
     err_code = nrf_drv_twi_init (&m_twi, &twi_config, on_complete, NULL);
+    ri_i2c_scanner;
 #ifdef NRF_FIX_TWI_ISSUE_209
     byte_freq_set (&m_twi, frequency);
 #endif
-    nrf_drv_twi_enable (&m_twi);
-    m_i2c_is_init = true;
-    m_tx_in_progress = false;
+    nrf_drv_twi_enable (&m_twi);    
+    m_i2c_is_init = true;    
+    m_tx_in_progress = false;    
     return ruuvi_nrf5_sdk15_to_ruuvi_error (err_code);
 }
 
